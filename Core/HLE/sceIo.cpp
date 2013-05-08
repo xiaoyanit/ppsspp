@@ -14,7 +14,7 @@
 
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
-
+ 
 #include "Core/Config.h"
 #include "Core/System.h"
 #include "Core/Host.h"
@@ -24,15 +24,12 @@
 #include "Core/HW/MemoryStick.h"
 #include "Core/CoreTiming.h"
 #include "Core/Reporting.h"
+#include "Core/MemMap.h"
 
 #include "../FileSystems/FileSystem.h"
 #include "../FileSystems/MetaFileSystem.h"
 #include "../FileSystems/ISOFileSystem.h"
 #include "../FileSystems/DirectoryFileSystem.h"
-
-extern "C" {
-#include "ext/libkirk/amctrl.h"
-};
 
 #include "sceIo.h"
 #include "sceRtc.h"
@@ -42,6 +39,12 @@ extern "C" {
 
 // For headless screenshots.
 #include "sceDisplay.h"
+
+
+#ifdef USE_FFMPEG
+LASTESTACCESSFILE lastestAccessFile;
+#endif // _USE_FFMPEG_
+
 
 const int ERROR_ERRNO_FILE_NOT_FOUND               = 0x80010002;
 const int ERROR_ERRNO_FILE_ALREADY_EXISTS          = 0x80010011;
@@ -414,8 +417,8 @@ u32 sceIoChstat(const char *filename, u32 iostatptr, u32 changebits) {
 	return 0;
 }
 
-u32 npdrmRead(FileNode *f, u8 *data, int size) {
-	PGD_DESC *pgd = f->pgdInfo;
+u32 npdrmRead(void *pgd_info, u32 handle, u8 *data, int size) {
+	PGD_DESC *pgd = (PGD_DESC*)pgd_info;
 	u32 block, offset, blockPos;
 	u32 remain_size, copy_size;
 
@@ -428,8 +431,8 @@ u32 npdrmRead(FileNode *f, u8 *data, int size) {
 	
 		if(pgd->current_block!=block){
 			blockPos = block*pgd->block_size;
-			pspFileSystem.SeekFile(f->handle, (s32)pgd->data_offset+blockPos, FILEMOVE_BEGIN);
-			pspFileSystem.ReadFile(f->handle, pgd->block_buf, pgd->block_size);
+			pspFileSystem.SeekFile(handle, (s32)pgd->data_offset+blockPos, FILEMOVE_BEGIN);
+			pspFileSystem.ReadFile(handle, pgd->block_buf, pgd->block_size);
 			pgd_decrypt_block(pgd, block);
 			pgd->current_block = block;
 		}
@@ -452,6 +455,10 @@ u32 npdrmRead(FileNode *f, u8 *data, int size) {
 	return size;
 }
 
+u32 npdrmRead(FileNode *f, u8 *data, int size) {
+	return npdrmRead(f->pgdInfo, f->handle, data, size);
+}
+
 int __IoRead(int id, u32 data_addr, int size) {
 	if (id == 3) {
 		DEBUG_LOG(HLE, "sceIoRead STDIN");
@@ -466,12 +473,38 @@ int __IoRead(int id, u32 data_addr, int size) {
 			return ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
 		}
 		else if (Memory::IsValidAddress(data_addr)) {
-			u8 *data = (u8*) Memory::GetPointer(data_addr);
-			if(f->npdrm){
-				return npdrmRead(f, data, size);
-			}else{
-				return (int) pspFileSystem.ReadFile(f->handle, data, size);
+#ifdef USE_FFMPEG
+			u8* idbuf = 0;
+			if (size >= 0x20 || strlen(f->fullpath.c_str()) < 10)
+			{
+				LASTESTFILECACHE *cache = &lastestAccessFile.cache[lastestAccessFile.cachepos];
+				strcpy(cache->packagefile, f->fullpath.c_str());
+				cache->start_pos = pspFileSystem.GetSeekPos(f->handle);
+				if (f->npdrm) {
+					cache->npdrm = true;
+					memcpy(&cache->pgd_info, f->pgdInfo, sizeof(PGD_DESC));
+				}
+				else
+					cache->npdrm = false;
+				idbuf = cache->idbuf;
 			}
+#endif // USE_FFMPEG
+			u8 *data = (u8*) Memory::GetPointer(data_addr);
+			int result;
+			if(f->npdrm){
+				result = npdrmRead(f, data, size);
+			}else{
+				result = (int) pspFileSystem.ReadFile(f->handle, data, size);
+			}
+#ifdef USE_FFMPEG
+			if (idbuf) {
+				if (memcmp(data, "PSMF", 4) == 0) {
+					lastestAccessFile.generateidbuf(data, idbuf);
+					lastestAccessFile.cachepos++;
+				}
+			}
+#endif // USE_FFMPEG
+			return result;
 		} else {
 			ERROR_LOG(HLE, "sceIoRead Reading into bad pointer %08x", data_addr);
 			// TODO: Returning 0 because it wasn't being sign-extended in async result before.

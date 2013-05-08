@@ -1,5 +1,4 @@
-#ifndef AMCTRL_H
-#define AMCTRL_H
+#pragma once
 
 typedef struct {
 	int type;
@@ -35,7 +34,7 @@ typedef struct {
 	u8  *block_buf;
 	u32 current_block;
 	u32 file_offset;
-}PGD_DESC;
+} PGD_DESC;
 
 
 // type:
@@ -61,6 +60,3 @@ int sceNpDrmGetFixedKey(u8 *key, char *npstr, int type);
 PGD_DESC *pgd_open(u8 *pgd_buf, int pgd_flag, u8 *pgd_vkey);
 int pgd_decrypt_block(PGD_DESC *pgd, int block);
 int pgd_close(PGD_DESC *pgd);
-
-#endif
-

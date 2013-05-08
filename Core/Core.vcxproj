@@ -227,6 +227,7 @@
     <ClCompile Include="HLE\__sceAudio.cpp" />
     <ClCompile Include="Host.cpp" />
     <ClCompile Include="HW\MediaEngine.cpp" />
+    <ClCompile Include="HW\MediaPlayer.cpp" />
     <ClCompile Include="HW\MemoryStick.cpp" />
     <ClCompile Include="HW\SasAudio.cpp" />
     <ClCompile Include="Loaders.cpp" />
@@ -401,6 +402,7 @@
     <ClInclude Include="HLE\__sceAudio.h" />
     <ClInclude Include="Host.h" />
     <ClInclude Include="HW\MediaEngine.h" />
+    <ClInclude Include="HW\MediaPlayer.h" />
     <ClInclude Include="HW\SasAudio.h" />
     <ClInclude Include="HW\MemoryStick.h" />
     <ClInclude Include="Loaders.h" />

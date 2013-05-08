@@ -42,6 +42,7 @@
 #endif
 
 
+
 // Global declarations
 class PointerWrap;
 
