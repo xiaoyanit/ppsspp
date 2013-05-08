@@ -101,10 +101,21 @@ mediaPlayer::~mediaPlayer(void)
 	g_MoviePlayingbuf = 0;
 }
 
+void ffmpeg_logger(void *, int, const char *format, va_list va_args) {
+	char tmp[1024];
+	vsprintf(tmp, format, va_args);
+	ERROR_LOG(HLE, tmp);
+#ifdef _WIN32
+	OutputDebugString(tmp);
+#endif
+}
+
 bool mediaPlayer::load(const char* filename)
 {
 	// Register all formats and codecs
 	av_register_all();
+	av_log_set_level( AV_LOG_VERBOSE);
+	av_log_set_callback(&ffmpeg_logger);
 
 	// Open video file
 	if(avformat_open_input((AVFormatContext**)&m_pFormatCtx, filename, NULL, NULL) != 0)
@@ -156,6 +167,9 @@ bool mediaPlayer::loadStream(u8* buffer, int size, bool bAutofreebuffer)
 	// Register all formats and codecs
 	av_register_all();
 
+	av_log_set_level( AV_LOG_VERBOSE);
+	av_log_set_callback(&ffmpeg_logger);
+
 	StreamBuffer *vstream = (StreamBuffer*)m_videobuf;
 	vstream->streamsize = size;
 	vstream->pos = 0;
@@ -176,8 +190,9 @@ bool mediaPlayer::loadStream(u8* buffer, int size, bool bAutofreebuffer)
 	// Open video file
 	if(avformat_open_input((AVFormatContext**)&m_pFormatCtx, NULL, NULL, NULL) != 0)
 		return false;
-
-	if(avformat_find_stream_info(pFormatCtx, NULL) < 0)
+	
+	int fsi_retval = avformat_find_stream_info(pFormatCtx, NULL);
+	if (fsi_retval < 0)
 		return false;
 
 	// Find the first video stream
