@@ -3,6 +3,8 @@
 #ifdef USE_FFMPEG
 #include "../../Globals.h"
 
+struct StreamBuffer;
+
 class mediaPlayer
 {
 public:
@@ -10,7 +12,7 @@ public:
 	~mediaPlayer(void);
 
 	bool load(const char* filename);
-	bool loadStream(u8* buffer, int size, bool bAutofreebuffer = true);
+	bool loadStream(u8* buffer, s64 size, bool bAutofreebuffer = true);
 	bool closeMedia();
 	bool writeVideoImage(u8* buffer, int frameWidth, int videoPixelMode);
 	bool setVideoSize(int width = 0, int height = 0);
@@ -20,17 +22,17 @@ private:
 	void *m_pFormatCtx;
 	void *m_pCodecCtx;
 	void *m_pFrame;
-    void *m_pFrameRGB;
+	void *m_pFrameRGB;
 	void *m_pIOContext;
 	int  m_videoStream;
-    void *m_sws_ctx;
-    u8* m_buffer;
-	void *m_videobuf;
+	void *m_sws_ctx;
+	u8* m_buffer;
+	StreamBuffer *m_videobuf;
 	int  m_desWidth;
 	int  m_desHeight;
 };
 
-bool loadPMFStream(u8* pmf, int pmfsize);
+bool loadPMFStream(u8* pmf, s64 pmfsize);
 bool loadPMFPSFFile(const char *filename, int mpegsize = -1);
 bool loadPMFPackageFile(const char* package, u32 startpos, int mpegsize, u8* buffer, void* pgd_info = 0);
 bool deletePMFStream();

@@ -9,6 +9,13 @@
 
 extern "C" {
 
+// Urgh! Why is this needed?
+#ifdef ANDROID
+#ifndef UINT64_C
+#define UINT64_C(c) (c ## ULL)
+#endif
+#endif
+
 #include "libavcodec/avcodec.h"
 #include "libavformat/avformat.h"
 #include "libswscale/swscale.h"
@@ -82,9 +89,9 @@ mediaPlayer::mediaPlayer(void)
 	m_pIOContext = 0;
 	m_videoStream = -1;
 	m_buffer = 0;
-	m_videobuf = (void *)new StreamBuffer;
-	((StreamBuffer *)m_videobuf)->buf = 0;
-	((StreamBuffer *)m_videobuf)->bufsize = 0x2000;
+	m_videobuf = new StreamBuffer;
+	m_videobuf->buf = 0;
+	m_videobuf->bufsize = 0x2000;
 
 	if (!g_MoviePlayingbuf)
 		g_MoviePlayingbuf = new u8[g_FramebufferMoviePlayinglinesize*280*4];
@@ -126,7 +133,7 @@ bool mediaPlayer::load(const char* filename)
 		return false;
 
 	// Find the first video stream
-	for(int i = 0; i < pFormatCtx->nb_streams; i++) {
+	for(unsigned int i = 0; i < pFormatCtx->nb_streams; i++) {
 		if(pFormatCtx->streams[i]->codec->codec_type == AVMEDIA_TYPE_VIDEO) {
 			m_videoStream = i;
 			break;
@@ -162,7 +169,7 @@ int read_buffer(void *opaque, uint8_t *buf, int buf_size)
     return size;
 }
 
-bool mediaPlayer::loadStream(u8* buffer, int size, bool bAutofreebuffer)
+bool mediaPlayer::loadStream(u8* buffer, s64 size, bool bAutofreebuffer)
 {
 	// Register all formats and codecs
 	av_register_all();
@@ -170,15 +177,15 @@ bool mediaPlayer::loadStream(u8* buffer, int size, bool bAutofreebuffer)
 	av_log_set_level( AV_LOG_VERBOSE);
 	av_log_set_callback(&ffmpeg_logger);
 
-	StreamBuffer *vstream = (StreamBuffer*)m_videobuf;
-	vstream->streamsize = size;
+	StreamBuffer *vstream = m_videobuf;
+	vstream->streamsize = (int)size;
 	vstream->pos = 0;
 	if (bAutofreebuffer)
 		vstream->buf = buffer;
 	else
 	{
-		vstream->buf = new u8[size];
-		memcpy(vstream->buf, buffer, size);
+		vstream->buf = new u8[(size_t)size];
+		memcpy(vstream->buf, buffer, (size_t)size);
 	}
 	u8* tempbuf = (u8*)av_malloc(vstream->bufsize);
 
@@ -196,7 +203,7 @@ bool mediaPlayer::loadStream(u8* buffer, int size, bool bAutofreebuffer)
 		return false;
 
 	// Find the first video stream
-	for(int i = 0; i < pFormatCtx->nb_streams; i++) {
+	for(unsigned int i = 0; i < pFormatCtx->nb_streams; i++) {
 		if(pFormatCtx->streams[i]->codec->codec_type == AVMEDIA_TYPE_VIDEO) {
 			m_videoStream = i;
 			break;
@@ -285,10 +292,10 @@ bool mediaPlayer::closeMedia()
 		avcodec_close((AVCodecContext*)m_pCodecCtx);
 	if (m_pFormatCtx)
 		avformat_close_input((AVFormatContext**)&m_pFormatCtx);
-	if (((StreamBuffer *)m_videobuf)->buf)
+	if (m_videobuf->buf)
 	{
-		delete [] (((StreamBuffer *)m_videobuf)->buf);
-		((StreamBuffer *)m_videobuf)->buf = 0;
+		delete [] m_videobuf->buf;
+		m_videobuf->buf = 0;
 	}
 	m_buffer = 0;
 	m_pFrame = 0;
@@ -378,7 +385,7 @@ static struct MovieInfo{
 
 static const int modeBpp[4] = { 2, 2, 2, 4 };
 
-bool loadPMFStream(u8* pmf, int pmfsize)
+bool loadPMFStream(u8* pmf, s64 pmfsize)
 {
 	bool bResult = g_pmfPlayer.loadStream(pmf, pmfsize, true);
 	if (!bResult)
@@ -395,7 +402,7 @@ bool loadPMFPSFFile(const char *filename, int mpegsize)
 	s64 infosize = info.size;
 	if ((mpegsize >= 0) && (abs(((int)infosize) - mpegsize) > 0x2000))
 		return false;
-	u8* buf = new u8[infosize];
+	u8* buf = new u8[(size_t)infosize];
 	u32 h = pspFileSystem.OpenFile(filename, (FileAccess) FILEACCESS_READ);
 	pspFileSystem.ReadFile(h, buf, infosize);
 	pspFileSystem.CloseFile(h);
