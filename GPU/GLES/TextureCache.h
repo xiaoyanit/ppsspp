@@ -38,6 +38,7 @@ public:
 	void Invalidate(u32 addr, int size, GPUInvalidationType type);
 	void InvalidateAll(GPUInvalidationType type);
 	void ClearNextFrame();
+	void UpdateCurrentClut();
 
 	// FramebufferManager keeps TextureCache updated about what regions of memory
 	// are being rendered to. This is barebones so far.
@@ -58,9 +59,15 @@ private:
 		const static int FRAMES_REGAIN_TRUST = 1000;
 
 		enum Status {
-			STATUS_HASHING,
-			STATUS_RELIABLE,  // cache, don't hash
-			STATUS_UNRELIABLE,  // never cache
+			STATUS_HASHING = 0x00,
+			STATUS_RELIABLE = 0x01,  // cache, don't hash
+			STATUS_UNRELIABLE = 0x02,  // never cache
+			STATUS_MASK = 0x03,
+
+			STATUS_ALPHA_UNKNOWN = 0x04,
+			STATUS_ALPHA_FULL = 0x00,  // Has no alpha channel, or always full alpha.
+			STATUS_ALPHA_SIMPLE = 0x08,  // Like above, but also has 0 alpha (e.g. 5551.)
+			STATUS_ALPHA_MASK = 0x0c,
 		};
 
 		// Status, but int so we can zero initialize.
@@ -77,7 +84,6 @@ private:
 		u8 clutformat;
 		u32 cluthash;
 		u16 dim;
-		u32 clutaddr;
 		u32 texture;  //GLuint
 		int invalidHint;
 		u32 fullhash;
@@ -92,7 +98,7 @@ private:
 		bool tClamp;
 
 		bool Matches(u16 dim2, u32 hash2, u8 format2, int maxLevel2);
-		bool MatchesClut(bool hasClut, u8 clutformat2, u32 clutaddr2);
+		bool MatchesClut(bool hasClut, u8 clutformat2);
 	};
 
 	void Decimate();  // Run this once per frame to get rid of old textures.
@@ -101,6 +107,10 @@ private:
 	void UpdateSamplingParams(TexCacheEntry &entry, bool force);
 	void LoadTextureLevel(TexCacheEntry &entry, int level);
 	void *DecodeTextureLevel(u8 format, u8 clutformat, int level, u32 &texByteAlign, GLenum &dstFmt);
+	void CheckAlpha(TexCacheEntry &entry, u32 *pixelData, GLenum dstFmt, int w, int h);
+	template <typename T>
+	const T *GetCurrentClut();
+	u32 GetCurrentClutHash();
 
 	TexCacheEntry *GetEntryAt(u32 texaddr);
 
@@ -117,8 +127,8 @@ private:
 
 	SimpleBuf<u32> tmpTexBufRearrange;
 
-	u32 *clutBuf32;
-	u16 *clutBuf16;
+	u32 *clutBuf_;
+	u32 clutHash_;
 
 	u32 lastBoundTexture;
 	float maxAnisotropyLevel;

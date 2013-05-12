@@ -1163,6 +1163,7 @@ u32 sceKernelReferThreadStatus(u32 threadID, u32 statusPtr)
 			Memory::Memcpy(statusPtr, &t->nt, sz);
 	}
 
+	hleEatCycles(1220);
 	return 0;
 }
 
@@ -1862,8 +1863,6 @@ int sceKernelStartThread(SceUID threadToStartID, int argSize, u32 argBlockPtr)
 		// TODO: Maybe this happens even for worse-priority started threads?
 		dispatchEnabled = true;
 
-		if (cur && cur->isRunning())
-			cur->nt.status &= ~THREADSTATUS_RUNNING;
 		__KernelChangeReadyState(cur, currentThread, true);
 		hleReSchedule("thread started");
 	}

@@ -18,6 +18,7 @@
 #include "Core/MemMap.h"
 #include "Core/Host.h"
 #include "Core/Config.h"
+#include "Core/Reporting.h"
 #include "Core/System.h"
 #include "gfx_es2/gl_state.h"
 
@@ -221,7 +222,7 @@ void GLES_GPU::BuildReportingInfo() {
 	const char *glSlVersion = GetGLStringAlways(GL_SHADING_LANGUAGE_VERSION);
 	const char *glExtensions = GetGLStringAlways(GL_EXTENSIONS);
 
-	char temp[2048];
+	char temp[16384];
 	snprintf(temp, sizeof(temp), "%s (%s %s), %s (extensions: %s)", glVersion, glVendor, glRenderer, glSlVersion, glExtensions);
 	reportingPrimaryInfo_ = glVendor;
 	reportingFullInfo_ = temp;
@@ -575,9 +576,14 @@ void GLES_GPU::ExecuteOp(u32 op, u32 diff) {
 
 	case GE_CMD_CLUTADDR:
 	case GE_CMD_CLUTADDRUPPER:
-	case GE_CMD_LOADCLUT:
 	case GE_CMD_CLUTFORMAT:
 		gstate_c.textureChanged = true;
+		// This could be used to "dirty" textures with clut.
+		break;
+
+	case GE_CMD_LOADCLUT:
+		gstate_c.textureChanged = true;
+		textureCache_.UpdateCurrentClut();
 		// This could be used to "dirty" textures with clut.
 		break;
 
@@ -795,8 +801,12 @@ void GLES_GPU::ExecuteOp(u32 op, u32 diff) {
 		shaderManager_->DirtyUniform(DIRTY_COLORMASK);
 		break;
 
-	case GE_CMD_COLORREF:
 	case GE_CMD_ALPHATEST:
+#ifndef USING_GLES2
+		if (((data >> 16) & 0xFF) != 0xFF && data != 0)
+			WARN_LOG_REPORT_ONCE(alphatestmask, HLE, "Unsupported alphatest mask: %02x", (data >> 16) & 0xFF);
+#endif
+	case GE_CMD_COLORREF:
 		shaderManager_->DirtyUniform(DIRTY_ALPHACOLORREF);
 		break;
 
