@@ -62,6 +62,8 @@
 #include "sceMp3.h"
 #include "scePauth.h"
 #include "sceNp.h"
+#include "sceMd5.h"
+#include "sceJpeg.h"
 
 #define N(s) s
 
@@ -77,6 +79,7 @@ const HLEFunction FakeSysCalls[] =
 	{NID_THREADRETURN, __KernelReturnFromThread, "__KernelReturnFromThread"},
 	{NID_CALLBACKRETURN, __KernelReturnFromMipsCall, "__KernelReturnFromMipsCall"},
 	{NID_INTERRUPTRETURN, __KernelReturnFromInterrupt, "__KernelReturnFromInterrupt"},
+	{NID_EXTENDRETURN, __KernelReturnFromExtendStack, "__KernelReturnFromExtendStack"},
 	{NID_IDLE, __KernelIdle, "_sceKernelIdle"},
 };
 
@@ -263,7 +266,9 @@ void RegisterAllModules() {
 	Register_sceNp();
 	Register_sceNpCommerce2();
 	Register_sceNpService();
-	Regester_sceNpAuth();
+	Register_sceNpAuth();
+	Register_sceMd5();
+	Register_sceJpeg();
 
 	for (int i = 0; i < numModules; i++)
 	{

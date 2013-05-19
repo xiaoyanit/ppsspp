@@ -16,25 +16,7 @@
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
 #pragma once
-#include <InitGuid.h>
-#define DIRECTINPUT_VERSION 0x0800
-#define DIRECTINPUT_RGBBUTTONS_MAX 128
-#include "InputDevice.h"
-#include "dinput.h"
 
-struct RawInputState;
+#include "HLE.h"
 
-class DinputDevice :
-	public InputDevice
-{
-public:
-	DinputDevice();
-	~DinputDevice();
-	virtual int UpdateState(InputState &input_state);
-	virtual bool IsPad() { return true; }
-	int UpdateRawStateSingle(RawInputState &rawState);
-private:
-	LPDIRECTINPUT8			pDI;
-	LPDIRECTINPUTDEVICE8    pJoystick;
-	bool					analog;
-};
+void Register_sceMd5();

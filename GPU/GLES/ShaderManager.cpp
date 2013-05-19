@@ -54,6 +54,9 @@ Shader::Shader(const char *code, uint32_t shaderType) {
 		ERROR_LOG(G3D, "Info log: %s\n", infoLog);
 		ERROR_LOG(G3D, "Shader source:\n%s\n", (const char *)code);
 		Reporting::ReportMessage("Error in shader compilation: info: %s / code: %s", infoLog, (const char *)code);
+#ifdef SHADERLOG
+		OutputDebugString(infoLog);
+#endif
 	} else {
 		DEBUG_LOG(G3D, "Compiled shader:\n%s\n", (const char *)code);
 	}
@@ -102,11 +105,8 @@ LinkedShader::LinkedShader(Shader *vs, Shader *fs)
 	u_view = glGetUniformLocation(program, "u_view");
 	u_world = glGetUniformLocation(program, "u_world");
 	u_texmtx = glGetUniformLocation(program, "u_texmtx");
-	for (int i = 0; i < 8; i++) {
-		char name[64];
-		sprintf(name, "u_bone%i", i);
-		u_bone[i] = glGetUniformLocation(program, name);
-	}
+	u_bone = glGetUniformLocation(program, "u_bone");
+	numBones = gstate.getNumBoneWeights();
 
 	// Lighting, texturing
 	u_ambient = glGetUniformLocation(program, "u_ambient");
@@ -141,8 +141,8 @@ LinkedShader::LinkedShader(Shader *vs, Shader *fs)
 	a_color1 = glGetAttribLocation(program, "a_color1");
 	a_texcoord = glGetAttribLocation(program, "a_texcoord");
 	a_normal = glGetAttribLocation(program, "a_normal");
-	a_weight0123 = glGetAttribLocation(program, "a_weight0123");
-	a_weight4567 = glGetAttribLocation(program, "a_weight4567");
+	a_weight0123 = glGetAttribLocation(program, "a_w1");
+	a_weight4567 = glGetAttribLocation(program, "a_w2");
 
 	glUseProgram(program);
 
@@ -179,15 +179,16 @@ static void SetColorUniform3Alpha(int uniform, u32 color, u8 alpha)
 	glUniform4fv(uniform, 1, col);
 }
 
-static void SetColorUniform3iAlpha(int uniform, u32 color, u8 alpha)
+// This passes colors unscaled (e.g. 0 - 255 not 0 - 1.)
+static void SetColorUniform3Alpha255(int uniform, u32 color, u8 alpha)
 {
-	const GLint col[4] = {
-		(GLint)((color & 0xFF)),
-		(GLint)((color & 0xFF00) >> 8),
-		(GLint)((color & 0xFF0000) >> 16),
-		(GLint)alpha
+	const float col[4] = {
+		(float)((color & 0xFF)),
+		(float)((color & 0xFF00) >> 8),
+		(float)((color & 0xFF0000) >> 16),
+		(float)alpha
 	};
-	glUniform4iv(uniform, 1, col);
+	glUniform4fv(uniform, 1, col);
 }
 
 static void SetColorUniform3ExtraFloat(int uniform, u32 color, float extra)
@@ -201,8 +202,7 @@ static void SetColorUniform3ExtraFloat(int uniform, u32 color, float extra)
 	glUniform4fv(uniform, 1, col);
 }
 
-static void SetMatrix4x3(int uniform, const float *m4x3) {
-	float m4x4[16];
+static void ConvertMatrix4x3To4x4(const float *m4x3, float *m4x4) {
 	m4x4[0] = m4x3[0];
 	m4x4[1] = m4x3[1];
 	m4x4[2] = m4x3[2];
@@ -219,6 +219,11 @@ static void SetMatrix4x3(int uniform, const float *m4x3) {
 	m4x4[13] = m4x3[10];
 	m4x4[14] = m4x3[11];
 	m4x4[15] = 1.0f;
+}
+
+static void SetMatrix4x3(int uniform, const float *m4x3) {
+	float m4x4[16];
+	ConvertMatrix4x3To4x4(m4x3, m4x4);
 	glUniformMatrix4fv(uniform, 1, GL_FALSE, m4x4);
 }
 
@@ -273,7 +278,7 @@ void LinkedShader::updateUniforms() {
 		SetColorUniform3(u_texenv, gstate.texenvcolor);
 	}
 	if (u_alphacolorref != -1 && (dirtyUniforms & DIRTY_ALPHACOLORREF)) {
-		SetColorUniform3iAlpha(u_alphacolorref, gstate.colorref, (gstate.alphatest >> 8) & 0xFF);
+		SetColorUniform3Alpha255(u_alphacolorref, gstate.colorref, (gstate.alphatest >> 8) & 0xFF);
 	}
 	if (u_colormask != -1 && (dirtyUniforms & DIRTY_COLORMASK)) {
 		SetColorUniform3(u_colormask, gstate.colormask);
@@ -316,9 +321,29 @@ void LinkedShader::updateUniforms() {
 	if (u_texmtx != -1 && (dirtyUniforms & DIRTY_TEXMATRIX)) {
 		SetMatrix4x3(u_texmtx, gstate.tgenMatrix);
 	}
-	for (int i = 0; i < 8; i++) {
-		if (u_bone[i] != -1 && (dirtyUniforms & (DIRTY_BONEMATRIX0 << i))) {
-			SetMatrix4x3(u_bone[i], gstate.boneMatrix + 12 * i);
+
+	// TODO: Could even set all bones in one go if they're all dirty.
+	if (u_bone != -1) {
+		float allBones[8 * 16];
+
+		bool allDirty = true;
+		for (int i = 0; i < numBones; i++) {
+			if (dirtyUniforms & (DIRTY_BONEMATRIX0 << i)) {
+				ConvertMatrix4x3To4x4(gstate.boneMatrix + 12 * i, allBones + 16 * i);
+			} else {
+				allDirty = false;
+			}
+		}
+		if (allDirty) {
+			// Set them all with one call
+			glUniformMatrix4fv(u_bone, numBones, GL_FALSE, allBones);
+		} else {
+			// Set them one by one. Could try to coalesce two in a row etc but too lazy.
+			for (int i = 0; i < numBones; i++) {
+				if (dirtyUniforms & (DIRTY_BONEMATRIX0 << i)) {
+					glUniformMatrix4fv(u_bone + i, 1, GL_FALSE, allBones + 16 * i);
+				}
+			}
 		}
 	}
 

@@ -25,7 +25,6 @@
 
 Config g_Config;
 
-#define MAX_RECENT 12
 
 #ifdef IOS
 extern bool isJailed;
@@ -64,6 +63,10 @@ void Config::Load(const char *iniFileName)
 	general->Get("ShowDebuggerOnLoad", &bShowDebuggerOnLoad, false);
 	general->Get("Language", &languageIni, "en_US");
 	general->Get("NumWorkerThreads", &iNumWorkerThreads, cpu_info.num_cores);
+	general->Get("MaxRecent", &iMaxRecent, 12);
+	// Fix issue from switching from uint (hex in .ini) to int (dec)
+	if (iMaxRecent == 0)
+		iMaxRecent = 12;
 
 	// "default" means let emulator decide, "" means disable.
 	general->Get("ReportHost", &sReportHost, "default");
@@ -72,8 +75,8 @@ void Config::Load(const char *iniFileName)
 	general->Get("WindowY", &iWindowY, 100);
 	general->Get("AutoSaveSymbolMap", &bAutoSaveSymbolMap, false);
 
-	if (recentIsos.size() > MAX_RECENT)
-		recentIsos.resize(MAX_RECENT);
+	if (recentIsos.size() > iMaxRecent)
+		recentIsos.resize(iMaxRecent);
 
 	IniFile::Section *cpu = iniFile.GetOrCreateSection("CPU");
 #ifdef IOS
@@ -98,6 +101,7 @@ void Config::Load(const char *iniFileName)
 	graphics->Get("SSAA", &SSAntiAliasing, 0);
 	graphics->Get("VBO", &bUseVBO, false);
 	graphics->Get("FrameSkip", &iFrameSkip, 0);
+	graphics->Get("FrameRate", &iFpsLimit, 60);
 	graphics->Get("UseMediaEngine", &bUseMediaEngine, true);
 #ifdef USING_GLES2
 	graphics->Get("AnisotropyLevel", &iAnisotropyLevel, 0);
@@ -151,8 +155,6 @@ void Config::Load(const char *iniFileName)
 	pspConfig->Get("EncryptSave", &bEncryptSave, true);
 
 	CleanRecent();
-	// Ephemeral settings
-	bDrawWireframe = false;
 }
 
 void Config::Save()
@@ -180,6 +182,7 @@ void Config::Save()
 		general->Set("AutoSaveSymbolMap", bAutoSaveSymbolMap);
 		general->Set("Language", languageIni);
 		general->Set("NumWorkerThreads", iNumWorkerThreads);
+		general->Set("MaxRecent", iMaxRecent);
 
 		IniFile::Section *cpu = iniFile.GetOrCreateSection("CPU");
 		cpu->Set("Jit", bJit);
@@ -195,6 +198,7 @@ void Config::Save()
 		graphics->Set("SSAA", SSAntiAliasing);
 		graphics->Set("VBO", bUseVBO);
 		graphics->Set("FrameSkip", iFrameSkip);
+		graphics->Set("FrameRate", iFpsLimit);
 		graphics->Set("UseMediaEngine", bUseMediaEngine);
 		graphics->Set("AnisotropyLevel", iAnisotropyLevel);
 		graphics->Set("VertexCache", bVertexCache);
@@ -249,14 +253,14 @@ void Config::AddRecent(const std::string &file) {
 		if (*str == file) {
 			recentIsos.erase(str);
 			recentIsos.insert(recentIsos.begin(), file);
-			if (recentIsos.size() > MAX_RECENT)
-				recentIsos.resize(MAX_RECENT);
+			if (recentIsos.size() > iMaxRecent)
+				recentIsos.resize(iMaxRecent);
 			return;
 		}
 	}
 	recentIsos.insert(recentIsos.begin(), file);
-	if (recentIsos.size() > MAX_RECENT)
-		recentIsos.resize(MAX_RECENT);
+	if (recentIsos.size() > iMaxRecent)
+		recentIsos.resize(iMaxRecent);
 }
 
 void Config::CleanRecent() {

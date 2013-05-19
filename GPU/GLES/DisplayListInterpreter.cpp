@@ -249,19 +249,6 @@ void GLES_GPU::DumpNextFrame() {
 	dumpNextFrame_ = true;
 }
 
-void GLES_GPU::BeginDebugDraw() {
-	if (g_Config.bDrawWireframe) {
-#ifndef USING_GLES2
-		glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
-#endif
-	}
-}
-void GLES_GPU::EndDebugDraw() {
-#ifndef USING_GLES2
-	glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-#endif
-}
-
 void GLES_GPU::BeginFrame() {
 	textureCache_.StartFrame();
 	transformDraw_.DecimateTrackedVertexArrays();
@@ -300,16 +287,12 @@ void GLES_GPU::CopyDisplayToOutput() {
 
 	transformDraw_.Flush();
 
-	EndDebugDraw();
-
 	framebufferManager_.CopyDisplayToOutput();
 	framebufferManager_.EndFrame();
 
 	shaderManager_->EndFrame();
 
 	gstate_c.textureChanged = true;
-
-	BeginDebugDraw();
 }
 
 // Render queue
@@ -583,7 +566,7 @@ void GLES_GPU::ExecuteOp(u32 op, u32 diff) {
 
 	case GE_CMD_LOADCLUT:
 		gstate_c.textureChanged = true;
-		textureCache_.UpdateCurrentClut();
+		textureCache_.LoadClut();
 		// This could be used to "dirty" textures with clut.
 		break;
 
@@ -937,6 +920,35 @@ void GLES_GPU::ExecuteOp(u32 op, u32 diff) {
 			gstate.boneMatrixNumber = (gstate.boneMatrixNumber & 0xFF000000) | (num & 0x7F);
 		}
 		break;
+
+#ifndef USING_GLES2
+	case GE_CMD_LOGICOPENABLE:
+		if (data != 0)
+			ERROR_LOG_REPORT_ONCE(logicOpEnable, G3D, "Unsupported logic op enabled: %x", data);
+		break;
+
+	case GE_CMD_LOGICOP:
+		if (data != 0)
+			ERROR_LOG_REPORT_ONCE(logicOp, G3D, "Unsupported logic op: %06x", data);
+		break;
+
+	case GE_CMD_ANTIALIASENABLE:
+		if (data != 0)
+			WARN_LOG_REPORT_ONCE(antiAlias, G3D, "Unsupported antialias enabled: %06x", data);
+		break;
+
+	case GE_CMD_TEXLODSLOPE:
+		if (data != 0)
+			WARN_LOG_REPORT_ONCE(texLodSlope, G3D, "Unsupported texture lod slope: %06x", data);
+		break;
+
+	case GE_CMD_TEXLEVEL:
+		if (data == 1)
+			WARN_LOG_REPORT_ONCE(texLevel1, G3D, "Unsupported texture level bias settings: %06x", data)
+		else if (data != 0)
+			WARN_LOG_REPORT_ONCE(texLevel2, G3D, "Unsupported texture level bias settings: %06x", data);
+		break;
+#endif
 
 	default:
 		GPUCommon::ExecuteOp(op, diff);

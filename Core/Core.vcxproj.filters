@@ -186,7 +186,13 @@
     <ClCompile Include="HLE\sceIo.cpp">
       <Filter>HLE\Libraries</Filter>
     </ClCompile>
+    <ClCompile Include="HLE\sceJpeg.cpp">
+      <Filter>HLE\Libraries</Filter>
+    </ClCompile>
     <ClCompile Include="HLE\sceMpeg.cpp">
+      <Filter>HLE\Libraries</Filter>
+    </ClCompile>
+    <ClCompile Include="HLE\sceMd5.cpp">
       <Filter>HLE\Libraries</Filter>
     </ClCompile>
     <ClCompile Include="HLE\sceMp4.cpp">
@@ -411,9 +417,6 @@
     <ClCompile Include="FileSystems\tlzrc.cpp">
       <Filter>FileSystems</Filter>
     </ClCompile>
-    <ClCompile Include="HW\MediaPlayer.cpp">
-      <Filter>HW</Filter>
-    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="ELF\ElfReader.h">
@@ -542,7 +545,13 @@
     <ClInclude Include="HLE\sceIo.h">
       <Filter>HLE\Libraries</Filter>
     </ClInclude>
+    <ClInclude Include="HLE\sceJpeg.h">
+      <Filter>HLE\Libraries</Filter>
+    </ClInclude>
     <ClInclude Include="HLE\sceMpeg.h">
+      <Filter>HLE\Libraries</Filter>
+    </ClInclude>
+    <ClInclude Include="HLE\sceMd5.h">
       <Filter>HLE\Libraries</Filter>
     </ClInclude>
     <ClInclude Include="HLE\sceMp4.h">
@@ -760,9 +769,6 @@
       <Filter>HLE\Libraries</Filter>
     </ClInclude>
     <ClInclude Include="HLE\sceMp3.h" />
-    <ClInclude Include="HW\MediaPlayer.h">
-      <Filter>HW</Filter>
-    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include="CMakeLists.txt" />
@@ -770,4 +776,5 @@
     <None Include="..\android\jni\Android.mk" />
     <None Include="GameLogNotes.txt" />
   </ItemGroup>
+>>>>>>> master
 </Project>

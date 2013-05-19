@@ -8,7 +8,7 @@ if(ANDROID)
 	endif()
 endif()
 
-if (IOS)
+if (IOS OR BLACKBERRY)
 	set(ARM ON)
 endif()
 
@@ -16,10 +16,6 @@ if (MAEMO)
 	set(ARM ON)
 	#Maemo's gcc-4.7.2 is strickt
 	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fpermissive")
-endif()
-
-if(BLACKBERRY)
-	set(ARM ON)
 endif()
 
 if(LOONGSON)
@@ -144,7 +140,7 @@ if(NOT MSVC)
 	endif()
 
 	if(BLACKBERRY)
-		add_definitions(-D_QNX_SOURCE=1 -D_C99=1)
+		add_definitions(-D_QNX_SOURCE=1 -D_C99=1 -O2 -mfpu=neon -mtune=cortex-a9)
 	endif()
 
 	if(X86 AND NOT MIPS)
@@ -442,7 +438,7 @@ elseif(IOS)
 		ios/ViewController.h
         ios/AudioEngine.mm
         ios/AudioEngine.h)
-	set(nativeExtraLibs ${nativeExtraLibs} "-framework Foundation -framework AudioToolbox -framework CoreGraphics -framework QuartzCore -framework OpenGLES -framework UIKit -framework GLKit -framework AudioToolbox -framework OpenAL")
+	set(nativeExtraLibs ${nativeExtraLibs} "-framework Foundation -framework AudioToolbox -framework CoreGraphics -framework QuartzCore -framework OpenGLES -framework UIKit -framework GLKit -framework OpenAL")
 	set(TargetBin PPSSPP)
 elseif(USING_QT_UI)
 	# Currently unused
@@ -766,6 +762,8 @@ add_library(${CoreLibName} ${CoreLinkType}
 	Core/HLE/sceImpose.h
 	Core/HLE/sceIo.cpp
 	Core/HLE/sceIo.h
+	Core/HLE/sceJpeg.cpp
+	Core/HLE/sceJpeg.h
 	Core/HLE/sceKernel.cpp
 	Core/HLE/sceKernel.h
 	Core/HLE/sceKernelAlarm.cpp
@@ -800,6 +798,8 @@ add_library(${CoreLibName} ${CoreLinkType}
 	Core/HLE/sceOpenPSID.h
 	Core/HLE/sceP3da.cpp
 	Core/HLE/sceP3da.h
+	Core/HLE/sceMd5.cpp
+	Core/HLE/sceMd5.h
 	Core/HLE/sceMp4.cpp
 	Core/HLE/sceMp4.h
 	Core/HLE/sceMp3.cpp

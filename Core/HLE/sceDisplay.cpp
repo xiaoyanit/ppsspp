@@ -278,9 +278,10 @@ void __DisplayGetDebugStats(char stats[2048])
 }
 
 // Let's collect all the throttling and frameskipping logic here.
-void DoFrameTiming(bool &throttle, bool &skipFrame) {
+void DoFrameTiming(bool &throttle, bool &skipFrame, int &fpsLimiter, double &customLimiter) {
 	throttle = !PSP_CoreParameter().unthrottle;
-
+	fpsLimiter = PSP_CoreParameter().fpsLimit;
+	customLimiter = g_Config.iFpsLimit;
 	skipFrame = false;
 	if (PSP_CoreParameter().headLess)
 		throttle = false;
@@ -336,10 +337,16 @@ void DoFrameTiming(bool &throttle, bool &skipFrame) {
 	// but don't let it get too far behind as things can get very jumpy.
 	const double maxFallBehindFrames = 5.5;
 
-	if (throttle || doFrameSkip) {
+	// 3 states of fps limiter
+	if (fpsLimiter == 0) {
 		nextFrameTime = std::max(nextFrameTime + 1.0 / 60.0, time_now_d() - maxFallBehindFrames / 60.0);
-	} else {
-		nextFrameTime = nextFrameTime + 1.0 / 60.0;
+	} else if (fpsLimiter == 1) {
+		nextFrameTime = std::max(nextFrameTime + 1.0 / customLimiter, time_now_d() - maxFallBehindFrames / customLimiter);
+	} else if (fpsLimiter == 2) {
+		return;
+	}
+	else {
+		nextFrameTime = nextFrameTime + 1.0 / 60;
 	}
 
 	// Max 4 skipped frames in a row - 15 fps is really the bare minimum for playability.
@@ -402,8 +409,10 @@ void hleEnterVblank(u64 userdata, int cyclesLate) {
 	gstate_c.skipDrawReason &= ~SKIPDRAW_SKIPFRAME;
 
 	bool throttle, skipFrame;
+	int fpsLimiter;
+	double customLimiter;
 	
-	DoFrameTiming(throttle, skipFrame);
+	DoFrameTiming(throttle, skipFrame, fpsLimiter, customLimiter);
 
 	if (skipFrame) {
 		gstate_c.skipDrawReason |= SKIPDRAW_SKIPFRAME;
@@ -485,8 +494,8 @@ u32 sceDisplaySetFramebuf(u32 topaddr, int linesize, int pixelformat, int sync) 
 	return 0;
 }
 
-bool __DisplayGetFramebuf(u8 **topaddr, u32 *linesize, u32 *pixelFormat, int mode) {
-	const FrameBufferState &fbState = mode == 1 ? latchedFramebuf : framebuf;
+bool __DisplayGetFramebuf(u8 **topaddr, u32 *linesize, u32 *pixelFormat, int latchedMode) {
+	const FrameBufferState &fbState = latchedMode == 1 ? latchedFramebuf : framebuf;
 	if (topaddr != NULL)
 		*topaddr = Memory::GetPointer(fbState.topaddr);
 	if (linesize != NULL)
@@ -497,8 +506,8 @@ bool __DisplayGetFramebuf(u8 **topaddr, u32 *linesize, u32 *pixelFormat, int mod
 	return true;
 }
 
-u32 sceDisplayGetFramebuf(u32 topaddrPtr, u32 linesizePtr, u32 pixelFormatPtr, int mode) {
-	const FrameBufferState &fbState = mode == 1 ? latchedFramebuf : framebuf;
+u32 sceDisplayGetFramebuf(u32 topaddrPtr, u32 linesizePtr, u32 pixelFormatPtr, int latchedMode) {
+	const FrameBufferState &fbState = latchedMode == 1 ? latchedFramebuf : framebuf;
 	DEBUG_LOG(HLE,"sceDisplayGetFramebuf(*%08x = %08x, *%08x = %08x, *%08x = %08x, %i)", topaddrPtr, fbState.topaddr, linesizePtr, fbState.pspFramebufLinesize, pixelFormatPtr, fbState.pspFramebufFormat, mode);
 
 	if (Memory::IsValidAddress(topaddrPtr))
@@ -593,9 +602,9 @@ u32 sceDisplayGetAccumulatedHcount() {
 }
 
 float sceDisplayGetFramePerSec() {
-	float fps = 59.9400599f;
-	DEBUG_LOG(HLE,"%f=sceDisplayGetFramePerSec()", fps);
-	return fps;	// (9MHz * 1)/(525 * 286)
+	const static float framePerSec = 59.9400599f;
+	DEBUG_LOG(HLE,"%f=sceDisplayGetFramePerSec()", framePerSec);
+	return framePerSec;	// (9MHz * 1)/(525 * 286)
 }
 
 u32 sceDisplayIsForeground() {

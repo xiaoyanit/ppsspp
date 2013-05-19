@@ -143,7 +143,7 @@ struct dirent {
 
 class FileNode : public KernelObject {
 public:
-	FileNode() : callbackID(0), callbackArg(0), asyncResult(0), pendingAsyncResult(false), sectorBlockMode(false), closePending(false), npdrm(0), pgdInfo(NULL) {}
+	FileNode() : callbackID(0), callbackArg(0), asyncResult(0), hasAsyncResult(false), pendingAsyncResult(false), sectorBlockMode(false), closePending(false), npdrm(0), pgdInfo(NULL) {}
 	~FileNode() {
 		pspFileSystem.CloseFile(handle);
 	}
@@ -161,6 +161,7 @@ public:
 		p.Do(callbackID);
 		p.Do(callbackArg);
 		p.Do(asyncResult);
+		p.Do(hasAsyncResult);
 		p.Do(pendingAsyncResult);
 		p.Do(sectorBlockMode);
 		p.Do(closePending);
@@ -179,6 +180,7 @@ public:
 	u32 callbackArg;
 
 	s64 asyncResult;
+	bool hasAsyncResult;
 	bool pendingAsyncResult;
 
 	bool sectorBlockMode;
@@ -336,6 +338,7 @@ void __IoCompleteAsyncIO(SceUID id) {
 			__KernelNotifyCallback(THREAD_CALLBACK_IO, f->callbackID, f->callbackArg);
 		}
 		f->pendingAsyncResult = false;
+		f->hasAsyncResult = true;
 	}
 }
 
@@ -374,6 +377,7 @@ void __IoSchedAsync(FileNode *f, SceUID fd, int usec) {
 	CoreTiming::ScheduleEvent(usToCycles(usec), asyncNotifyEvent, param);
 
 	f->pendingAsyncResult = true;
+	f->hasAsyncResult = false;
 }
 
 u32 sceIoGetstat(const char *filename, u32 addr) {
@@ -1182,8 +1186,7 @@ u32 sceIoRename(const char *from, const char *to) {
 
 u32 sceIoChdir(const char *dirname) {
 	DEBUG_LOG(HLE, "sceIoChdir(%s)", dirname);
-	pspFileSystem.ChDir(dirname);
-	return 0;
+	return pspFileSystem.ChDir(dirname);
 }
 
 int sceIoChangeAsyncPriority(int id, int priority)
@@ -1279,20 +1282,24 @@ u32 sceIoGetAsyncStat(int id, u32 poll, u32 address)
 				DEBUG_LOG(HLE, "%lli = sceIoGetAsyncStat(%i, %i, %08x): waiting", f->asyncResult, id, poll, address);
 				__KernelWaitCurThread(WAITTYPE_IO, id, address, 0, false, "io waited");
 			}
-		} else {
+		} else if (f->hasAsyncResult) {
 			DEBUG_LOG(HLE, "%lli = sceIoGetAsyncStat(%i, %i, %08x)", f->asyncResult, id, poll, address);
 			Memory::Write_U64((u64) f->asyncResult, address);
+			f->hasAsyncResult = false;
 
 			if (f->closePending) {
 				kernelObjects.Destroy<FileNode>(id);
 			}
+		} else {
+			WARN_LOG(HLE, "SCE_KERNEL_ERROR_NOASYNC = sceIoGetAsyncStat(%i, %i, %08x)", id, poll, address);
+			return SCE_KERNEL_ERROR_NOASYNC;
 		}
 		return 0; //completed
 	}
 	else
 	{
 		ERROR_LOG(HLE, "ERROR - sceIoGetAsyncStat with invalid id %i", id);
-		return -1;
+		return SCE_KERNEL_ERROR_BADF;
 	}
 }
 
@@ -1303,18 +1310,22 @@ int sceIoWaitAsync(int id, u32 address) {
 		if (f->pendingAsyncResult) {
 			DEBUG_LOG(HLE, "%lli = sceIoWaitAsync(%i, %08x): waiting", f->asyncResult, id, address);
 			__KernelWaitCurThread(WAITTYPE_IO, id, address, 0, false, "io waited");
-		} else {
+		} else if (f->hasAsyncResult) {
 			DEBUG_LOG(HLE, "%lli = sceIoWaitAsync(%i, %08x)", f->asyncResult, id, address);
 			Memory::Write_U64((u64) f->asyncResult, address);
+			f->hasAsyncResult = false;
 
 			if (f->closePending) {
 				kernelObjects.Destroy<FileNode>(id);
 			}
+		} else {
+			WARN_LOG(HLE, "SCE_KERNEL_ERROR_NOASYNC = sceIoWaitAsync(%i, %08x)", id, address);
+			return SCE_KERNEL_ERROR_NOASYNC;
 		}
 		return 0; //completed
 	} else {
 		ERROR_LOG(HLE, "ERROR - sceIoWaitAsync waiting for invalid id %i", id);
-		return -1;
+		return SCE_KERNEL_ERROR_BADF;
 	}
 }
 
@@ -1327,18 +1338,22 @@ int sceIoWaitAsyncCB(int id, u32 address) {
 		if (f->pendingAsyncResult) {
 			DEBUG_LOG(HLE, "%lli = sceIoWaitAsyncCB(%i, %08x): waiting", f->asyncResult, id, address);
 			__KernelWaitCurThread(WAITTYPE_IO, id, address, 0, false, "io waited");
-		} else {
+		} else if (f->hasAsyncResult) {
 			DEBUG_LOG(HLE, "%lli = sceIoWaitAsyncCB(%i, %08x)", f->asyncResult, id, address);
 			Memory::Write_U64((u64) f->asyncResult, address);
+			f->hasAsyncResult = false;
 
 			if (f->closePending) {
 				kernelObjects.Destroy<FileNode>(id);
 			}
+		} else {
+			WARN_LOG(HLE, "SCE_KERNEL_ERROR_NOASYNC = sceIoWaitAsyncCB(%i, %08x)", id, address);
+			return SCE_KERNEL_ERROR_NOASYNC;
 		}
 		return 0; //completed
 	} else {
 		ERROR_LOG(HLE, "ERROR - sceIoWaitAsyncCB waiting for invalid id %i", id);
-		return -1;
+		return SCE_KERNEL_ERROR_BADF;
 	}
 }
 
@@ -1349,18 +1364,22 @@ u32 sceIoPollAsync(int id, u32 address) {
 		if (f->pendingAsyncResult) {
 			DEBUG_LOG(HLE, "%lli = sceIoPollAsync(%i, %08x): not ready", f->asyncResult, id, address);
 			return 1;
-		} else {
+		} else if (f->hasAsyncResult) {
 			DEBUG_LOG(HLE, "%lli = sceIoPollAsync(%i, %08x)", f->asyncResult, id, address);
 			Memory::Write_U64((u64) f->asyncResult, address);
+			f->hasAsyncResult = false;
 
 			if (f->closePending) {
 				kernelObjects.Destroy<FileNode>(id);
 			}
 			return 0; //completed
+		} else {
+			WARN_LOG(HLE, "SCE_KERNEL_ERROR_NOASYNC = sceIoWaitAsyncCB(%i, %08x)", id, address);
+			return SCE_KERNEL_ERROR_NOASYNC;
 		}
 	} else {
 		ERROR_LOG(HLE, "ERROR - sceIoPollAsync waiting for invalid id %i", id);
-		return -1;  // TODO: correct error code
+		return SCE_KERNEL_ERROR_BADF;
 	}
 }
 
