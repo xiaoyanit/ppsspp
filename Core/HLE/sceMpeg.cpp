@@ -690,7 +690,6 @@ u32 sceMpegAvcDecode(u32 mpeg, u32 auAddr, u32 frameWidth, u32 bufferAddr, u32 i
 
 	if (ctx->mediaengine->stepVideo()) {
 #ifdef USE_FFMPEG
-		//if (!playPMFVideo())
 		if (!writePMFVideoImage(Memory::GetPointer(buffer), frameWidth, ctx->videoPixelMode))
 		{
 			iresult = -1;

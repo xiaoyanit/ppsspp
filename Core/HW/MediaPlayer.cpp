@@ -125,21 +125,21 @@ bool mediaPlayer::load(const char* filename)
 	av_log_set_callback(&ffmpeg_logger);
 
 	// Open video file
-	if(avformat_open_input((AVFormatContext**)&m_pFormatCtx, filename, NULL, NULL) != 0)
+	if (avformat_open_input((AVFormatContext**)&m_pFormatCtx, filename, NULL, NULL) != 0)
 		return false;
 
 	AVFormatContext *pFormatCtx = (AVFormatContext*)m_pFormatCtx;
-	if(avformat_find_stream_info(pFormatCtx, NULL) < 0)
+	if (avformat_find_stream_info(pFormatCtx, NULL) < 0)
 		return false;
 
 	// Find the first video stream
-	for(unsigned int i = 0; i < pFormatCtx->nb_streams; i++) {
+	for (unsigned int i = 0; i < pFormatCtx->nb_streams; i++) {
 		if(pFormatCtx->streams[i]->codec->codec_type == AVMEDIA_TYPE_VIDEO) {
 			m_videoStream = i;
 			break;
 		}
 	}
-	if(m_videoStream == -1)
+	if (m_videoStream == -1)
 		return false;
 
 	// Get a pointer to the codec context for the video stream
@@ -463,6 +463,24 @@ mediaPlayer* getPMFPlayer()
 	return &g_pmfPlayer;
 }
 
+void stepFrame() 
+{
+	if (movieInfo.iPlayVideo > 0)
+	{
+		if (!g_pmfPlayer.writeVideoImage(movieInfo.movieBuf, 
+			movieInfo.frameWidth, movieInfo.videoPixelMode))
+		{
+			g_FramebufferMoviePlaying = false;
+			bStop = true;
+			return;
+		}
+		movieInfo.iPlayVideo--;
+		g_FramebufferMoviePlaying = true;
+	}
+	else
+		g_FramebufferMoviePlaying = false;
+}
+
 u32 loopPlaying(void * lpvoid)
 {
 	int count = 0;
@@ -470,20 +488,8 @@ u32 loopPlaying(void * lpvoid)
 	while (bPlaying)
 	{
 		clock_t starttime = clock();
-		if (movieInfo.iPlayVideo > 0)
-		{
-			if (!g_pmfPlayer.writeVideoImage(movieInfo.movieBuf, 
-				movieInfo.frameWidth, movieInfo.videoPixelMode))
-			{
-				g_FramebufferMoviePlaying = false;
-				bStop = true;
-				return 0;
-			}
-			movieInfo.iPlayVideo--;
-			g_FramebufferMoviePlaying = true;
-		}
-		else
-			g_FramebufferMoviePlaying = false;
+		stepFrame();
+
 		clock_t endtime = clock();
 		// keep the movie frames 30FPS
 		count = (count + 1) % 30;
@@ -534,8 +540,9 @@ bool playPMFVideo(u8* buffer, int frameWidth, int videoPixelMode)
 		movieInfo.frameWidth = std::max(frameWidth, g_pmfPlayer.getDesWidth());
 		movieInfo.videoPixelMode = videoPixelMode;
 
-		std::thread thread(loopPlaying, (void*)0);
 	}
+	// std::thread thread(loopPlaying, (void*)0);
+	stepFrame(); 
 	return true;
 }
 
