@@ -17,40 +17,58 @@
 
 #pragma once
 
-#include "../Core/Host.h"
-
-#define HEADLESSHOST_CLASS HeadlessHost
+#include "Core/Host.h"
+#include "Core/Debugger/SymbolMap.h"
 
 // TODO: Get rid of this junk
 class HeadlessHost : public Host
 {
 public:
-	// virtual void StartThread()
-	virtual void UpdateUI() {}
+	void UpdateUI() override {}
 
-	virtual void UpdateMemView() {}
-	virtual void UpdateDisassembly() {}
+	void UpdateMemView() override {}
+	void UpdateDisassembly() override {}
 
-	virtual void SetDebugMode(bool mode) { }
+	void SetDebugMode(bool mode) { }
 
-	virtual bool InitGL(std::string *error_message) {return false;}
-	virtual void ShutdownGL() {}
+	bool InitGraphics(std::string *error_message) override {return false;}
+	void ShutdownGraphics() override {}
 
-	virtual void InitSound(PMixer *mixer) {}
-	virtual void UpdateSound() {}
-	virtual void ShutdownSound() {}
+	void InitSound() override {}
+	void UpdateSound() override {}
+	void ShutdownSound() override {}
 
 	// this is sent from EMU thread! Make sure that Host handles it properly
-	virtual void BootDone() {}
+	void BootDone() override {}
 
-	virtual bool IsDebuggingEnabled() {return false;}
-	virtual bool AttemptLoadSymbolMap() {return false;}
+	bool IsDebuggingEnabled() override { return false; }
+	bool AttemptLoadSymbolMap() override { symbolMap.Clear(); return false; }
 
-	virtual void SendDebugOutput(const std::string &output) { printf("%s", output.c_str()); }
+	bool ShouldSkipUI() override { return true; }
+
+	void SendDebugOutput(const std::string &output) override {
+		if (output.find('\n') != output.npos) {
+			DoFlushDebugOutput();
+			fwrite(output.data(), sizeof(char), output.length(), stdout);
+		} else {
+			debugOutputBuffer_ += output;
+		}
+	}
+	virtual void FlushDebugOutput() {
+		DoFlushDebugOutput();
+	}
+	inline void DoFlushDebugOutput() {
+		if (!debugOutputBuffer_.empty()) {
+			fwrite(debugOutputBuffer_.data(), sizeof(char), debugOutputBuffer_.length(), stdout);
+			debugOutputBuffer_.clear();
+		}
+	}
 	virtual void SetComparisonScreenshot(const std::string &filename) {}
 
 
 	// Unique for HeadlessHost
 	virtual void SwapBuffers() {}
 
+protected:
+	std::string debugOutputBuffer_;
 };

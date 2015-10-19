@@ -3,24 +3,34 @@
 
 #pragma once
 
-#include "../../Globals.h"
+#include "Common/CommonTypes.h"
+#include "Core/HW/BufferQueue.h"
+
+class PointerWrap;
 
 class MpegDemux
 {
 public:
-	MpegDemux(u8* buffer, int size, int offset);
-	~MpegDemux(void);
+	MpegDemux(int size, int offset);
+	~MpegDemux();
 
-	void setReadSize(int readSize);
+	bool addStreamData(const u8 *buf, int addSize);
+	void demux(int audioChannel);
 
-	void demux();
+	// return its framesize
+	int getNextAudioFrame(u8 **buf, int *headerCode1, int *headerCode2, s64 *pts = NULL);
+	bool hasNextAudioFrame(int *gotsizeOut, int *frameSizeOut, int *headerCode1, int *headerCode2);
 
-	// return it's size
-	int getaudioStream(u8 **audioStream);
+	int getRemainSize() const {
+		return m_len - m_readSize;
+	}
+
+	void DoState(PointerWrap &p);
+
 private:
 	struct PesHeader {
-		long pts;
-		long dts;
+		s64 pts;
+		s64 dts;
 		int channel;
 
 		PesHeader(int chan) {
@@ -29,19 +39,20 @@ private:
 			channel = chan;
 		}
 	};
+
 	int read8() {
-		return m_buf[m_index++] & 0xFF;
+		return m_buf[m_index++];
 	}
 	int read16() {
 		return (read8() << 8) | read8();
 	}
-	long readPts() {
+	s64 readPts() {
 		return readPts(read8());
 	}
-	long readPts(int c) {
-		return (((long) (c & 0x0E)) << 29) | ((read16() >> 1) << 15) | (read16() >> 1);
+	s64 readPts(int c) {
+		return (((s64) (c & 0x0E)) << 29) | ((read16() >> 1) << 15) | (read16() >> 1);
 	}
-	bool isEOF() {
+	bool isEOF() const {
 		return m_index >= m_len;
 	}
 	void skip(int n) {
@@ -51,12 +62,12 @@ private:
 	}
 	int readPesHeader(PesHeader &pesHeader, int length, int startCode);
 	int demuxStream(bool bdemux, int startCode, int channel);
-private:
+
 	int m_index;
 	int m_len;
 	u8* m_buf;
-	u8* m_audioStream;
-	int m_audiopos;
+	BufferQueue m_audioStream;
+	u8  m_audioFrame[0x2000];
 	int m_audioChannel;
 	int m_readSize;
 };

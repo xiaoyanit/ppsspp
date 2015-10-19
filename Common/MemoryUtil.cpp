@@ -20,8 +20,7 @@
 #include "StringUtils.h"
 
 #ifdef _WIN32
-#include <windows.h>
-#include <psapi.h>
+#include "CommonWindows.h"
 #else
 #include <errno.h>
 #include <stdio.h>
@@ -32,90 +31,152 @@
 #include <sys/mman.h>
 #endif
 
-#include <stdlib.h>
 
-
-#if !defined(_WIN32) && defined(__x86_64__) && !defined(MAP_32BIT)
+#if defined(_M_X64)
+#ifndef _WIN32
 #include <unistd.h>
+#endif
+static int hint_location;
 #ifdef __APPLE__
 #define PAGE_MASK (4096-1)
+#elif defined(_WIN32)
+static SYSTEM_INFO sys_info;
+#define PAGE_MASK (uintptr_t)(sys_info.dwPageSize - 1)
 #else
 #define PAGE_MASK     (getpagesize() - 1)
 #endif
-#define round_page(x) ((((unsigned long)(x)) + PAGE_MASK) & ~(PAGE_MASK))
+#define round_page(x) ((((uintptr_t)(x)) + PAGE_MASK) & ~(PAGE_MASK))
 #endif
 
 #ifdef __SYMBIAN32__
 #include <e32std.h>
-#define SYMBIAN_CODECHUNK_SIZE 1024*1024*17;
+#define CODECHUNK_SIZE 1024*1024*20
 static RChunk* g_code_chunk = NULL;
 static RHeap* g_code_heap = NULL;
+static u8* g_next_ptr = NULL;
+static u8* g_orig_ptr = NULL;
+
+void ResetExecutableMemory(void* ptr)
+{
+	// Just reset the ptr to the base
+	g_next_ptr = g_orig_ptr;
+}
+#endif
+
+#if defined(_WIN32) && defined(_M_X64)
+static uintptr_t last_executable_addr;
+static void *SearchForFreeMem(size_t size)
+{
+	if (!last_executable_addr)
+		last_executable_addr = (uintptr_t) &hint_location - sys_info.dwPageSize;
+	last_executable_addr -= size;
+
+	MEMORY_BASIC_INFORMATION info;
+	while (VirtualQuery((void *)last_executable_addr, &info, sizeof(info)) == sizeof(info))
+	{
+		// went too far, unusable for executable memory
+		if (last_executable_addr + 0x80000000 < (uintptr_t) &hint_location)
+			return NULL;
+
+		uintptr_t end = last_executable_addr + size;
+		if (info.State != MEM_FREE)
+		{
+			last_executable_addr = (uintptr_t) info.AllocationBase - size;
+			continue;
+		}
+
+		if ((uintptr_t)info.BaseAddress + (uintptr_t)info.RegionSize >= end &&
+			(uintptr_t)info.BaseAddress <= last_executable_addr)
+			return (void *)last_executable_addr;
+
+		last_executable_addr -= size;
+	}
+
+	return NULL;
+}
 #endif
 
 // This is purposely not a full wrapper for virtualalloc/mmap, but it
-// provides exactly the primitive operations that Dolphin needs.
+// provides exactly the primitive operations that PPSSPP needs.
 
-void* AllocateExecutableMemory(size_t size, bool low)
-{
+void *AllocateExecutableMemory(size_t size, bool exec) {
 #if defined(_WIN32)
-	void* ptr = VirtualAlloc(0, size, MEM_COMMIT, PAGE_EXECUTE_READWRITE);
-#elif defined(__SYMBIAN32__)
-    //This function may be called more than once, and we want to create only one big
-    //memory chunk for all the executable code for the JIT
-	void* ptr;
-    if( g_code_chunk == NULL && g_code_heap == NULL)
-    {
-        TInt minsize = SYMBIAN_CODECHUNK_SIZE;
-        TInt maxsize = SYMBIAN_CODECHUNK_SIZE + 3*GetPageSize(); //some offsets
-        g_code_chunk = new RChunk();
-        g_code_chunk->CreateLocalCode(minsize, maxsize);
-        g_code_heap = UserHeap::ChunkHeap(*g_code_chunk, minsize, 1, maxsize);
-		ptr = (void*) g_code_heap->Alloc( size );
-    }
+	void *ptr;
+#if defined(_M_X64)
+	if (exec && (uintptr_t)&hint_location > 0xFFFFFFFFULL) {
+		if (sys_info.dwPageSize == 0)
+			GetSystemInfo(&sys_info);
+
+		size_t aligned_size = round_page(size);
+		ptr = SearchForFreeMem(aligned_size);
+		if (!ptr) {
+			// Let's try again, from the top.
+			// When we deallocate, this doesn't change, so we eventually run out of space.
+			last_executable_addr = 0;
+			ptr = SearchForFreeMem(aligned_size);
+		}
+		if (ptr) {
+			ptr = VirtualAlloc(ptr, aligned_size, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE);
+		} else {
+			ERROR_LOG(COMMON, "Unable to find nearby executable memory for jit");
+		}
+	}
 	else
-		ptr = g_code_heap->Base();
+#endif
+		ptr = VirtualAlloc(0, size, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE);
+#elif defined(__SYMBIAN32__)
+	//This function may be called more than once, and we want to create only one big
+	//memory chunk for all the executable code for the JIT
+	if( g_code_chunk == NULL && g_code_heap == NULL)
+	{
+		g_code_chunk = new RChunk();
+		g_code_chunk->CreateLocalCode(CODECHUNK_SIZE, CODECHUNK_SIZE + 3*GetPageSize());
+		g_code_heap = UserHeap::ChunkHeap(*g_code_chunk, CODECHUNK_SIZE, 1, CODECHUNK_SIZE + 3*GetPageSize());
+		g_next_ptr = reinterpret_cast<u8*>(g_code_heap->AllocZ(CODECHUNK_SIZE));
+		g_orig_ptr = g_next_ptr;
+	}
+	void* ptr = (void*)g_next_ptr;
+	g_next_ptr += size;
 #else
 	static char *map_hint = 0;
-#if defined(__x86_64__) && !defined(MAP_32BIT)
-	// This OS has no flag to enforce allocation below the 4 GB boundary,
-	// but if we hint that we want a low address it is very likely we will
-	// get one.
-	// An older version of this code used MAP_FIXED, but that has the side
-	// effect of discarding already mapped pages that happen to be in the
-	// requested virtual memory range (such as the emulated RAM, sometimes).
-	if (low && (!map_hint))
-		map_hint = (char*)round_page(512*1024*1024); /* 0.5 GB rounded up to the next page */
+#if defined(_M_X64)
+	// Try to request one that is close to our memory location if we're in high memory.
+	// We use a dummy global variable to give us a good location to start from.
+	if (exec && (!map_hint))
+	{
+		if ((uintptr_t) &hint_location > 0xFFFFFFFFULL)
+			map_hint = (char*)round_page(&hint_location) - 0x20000000; // 0.5gb lower than our approximate location
+		else
+			map_hint = (char*)0x20000000; // 0.5GB mark in memory
+	}
+	else if (exec && (uintptr_t) map_hint > 0xFFFFFFFFULL)
+	{
+		map_hint -= round_page(size); /* round down to the next page if we're in high memory */
+	}
 #endif
 	void* ptr = mmap(map_hint, size, PROT_READ | PROT_WRITE	| PROT_EXEC,
 		MAP_ANON | MAP_PRIVATE
-#if defined(__x86_64__) && defined(MAP_32BIT)
-		| (low ? MAP_32BIT : 0)
+#if defined(_M_X64) && defined(MAP_32BIT)
+		| (exec && (uintptr_t) map_hint == 0 ? MAP_32BIT : 0)
 #endif
 		, -1, 0);
+
 #endif /* defined(_WIN32) */
 
-	// printf("Mapped executable memory at %p (size %ld)\n", ptr,
-	//	(unsigned long)size);
-
-#if defined(__FreeBSD__)
-	if (ptr == MAP_FAILED)
-	{
-		ptr = NULL;
+#if !defined(_WIN32) && !defined(__SYMBIAN32__)
+	static const void *failed_result = MAP_FAILED;
 #else
-	if (ptr == NULL)
-	{
+	static const void *failed_result = nullptr;
 #endif
-		PanicAlert("Failed to allocate executable memory");
+
+	if (ptr == failed_result) {
+		ptr = nullptr;
+		PanicAlert("Failed to allocate executable memory\n%s", GetLastErrorMsg());
 	}
-#if !defined(_WIN32) && defined(__x86_64__) && !defined(MAP_32BIT)
-	else
-	{
-		if (low)
-		{
-			map_hint += size;
-			map_hint = (char*)round_page(map_hint); /* round up to the next page */
-			// printf("Next map will (hopefully) be at %p\n", map_hint);
-		}
+#if defined(_M_X64) && !defined(_WIN32)
+	else if (exec && (uintptr_t)map_hint <= 0xFFFFFFFF) {
+		// Round up if we're below 32-bit mark, probably allocating sequentially.
+		map_hint += round_page(size);
 	}
 #endif
 
@@ -124,10 +185,11 @@ void* AllocateExecutableMemory(size_t size, bool low)
 
 void* AllocateMemoryPages(size_t size)
 {
+	size = (size + 4095) & (~4095);
 #ifdef _WIN32
 	void* ptr = VirtualAlloc(0, size, MEM_COMMIT, PAGE_READWRITE);
 #elif defined(__SYMBIAN32__)
-	void* ptr = new u8[size];
+	void* ptr = malloc(size);
 #else
 	void* ptr = mmap(0, size, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
 #endif
@@ -149,8 +211,7 @@ void* AllocateAlignedMemory(size_t size,size_t alignment)
 #ifdef ANDROID
 	ptr = memalign(alignment, size);
 #elif defined(__SYMBIAN32__)
-	// On Symbian, we will want to create an RChunk Allocator.
-	// See: javascriptcore:JavaScriptCore/wtf/symbian/BlockAllocatorSymbian.cpp
+	// On Symbian, alignment won't matter as NEON isn't supported.
 	ptr = malloc(size);
 #else
 	if(posix_memalign(&ptr, alignment, size) != 0)
@@ -167,17 +228,16 @@ void* AllocateAlignedMemory(size_t size,size_t alignment)
 	return ptr;
 }
 
-void FreeMemoryPages(void* ptr, size_t size)
+void FreeMemoryPages(void *ptr, size_t size)
 {
+	size = (size + 4095) & (~4095);
 	if (ptr)
 	{
 #ifdef _WIN32
-	
 		if (!VirtualFree(ptr, 0, MEM_RELEASE))
 			PanicAlert("FreeMemoryPages failed!\n%s", GetLastErrorMsg());
-		ptr = NULL; // Is this our responsibility?
 #elif defined(__SYMBIAN32__)
-		delete [] ptr;
+		free(ptr);
 #else
 		munmap(ptr, size);
 #endif
@@ -215,29 +275,5 @@ void UnWriteProtectMemory(void* ptr, size_t size, bool allowExecute)
 		PanicAlert("UnWriteProtectMemory failed!\n%s", GetLastErrorMsg());
 #else
 	mprotect(ptr, size, allowExecute ? (PROT_READ | PROT_WRITE | PROT_EXEC) : PROT_WRITE | PROT_READ);
-#endif
-}
-
-std::string MemUsage()
-{
-#ifdef _WIN32
-#pragma comment(lib, "psapi")
-	DWORD processID = GetCurrentProcessId();
-	HANDLE hProcess;
-	PROCESS_MEMORY_COUNTERS pmc;
-	std::string Ret;
-
-	// Print information about the memory usage of the process.
-
-	hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, processID);
-	if (NULL == hProcess) return "MemUsage Error";
-
-	if (GetProcessMemoryInfo(hProcess, &pmc, sizeof(pmc)))
-		Ret = StringFromFormat("%s K", ThousandSeparate(pmc.WorkingSetSize / 1024, 7).c_str());
-
-	CloseHandle(hProcess);
-	return Ret;
-#else
-	return "";
 #endif
 }

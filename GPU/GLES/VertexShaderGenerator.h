@@ -17,39 +17,17 @@
 
 #pragma once
 
-#include "Globals.h"
+#include "Common/CommonTypes.h"
 
 // #define USE_BONE_ARRAY
 
-struct VertexShaderID
-{
-	VertexShaderID() {d[0] = 0xFFFFFFFF;}
-	void clear() {d[0] = 0xFFFFFFFF;}
-	u32 d[2];
-	bool operator < (const VertexShaderID &other) const
-	{
-		for (size_t i = 0; i < sizeof(d) / sizeof(u32); i++)
-		{
-			if (d[i] < other.d[i])
-				return true;
-			if (d[i] > other.d[i])
-				return false;
-		}
-		return false;
-	}
-	bool operator == (const VertexShaderID &other) const
-	{
-		for (size_t i = 0; i < sizeof(d) / sizeof(u32); i++)
-		{
-			if (d[i] != other.d[i])
-				return false;
-		}
-		return true;
-	}
-};
+struct ShaderID;
 
 bool CanUseHardwareTransform(int prim);
 
-void ComputeVertexShaderID(VertexShaderID *id, int prim);
+void ComputeVertexShaderID(ShaderID *id, u32 vertexType, bool useHWTransform);
+void GenerateVertexShader(const ShaderID &id, char *buffer);
 
-void GenerateVertexShader(int prim, char *buffer);
+// Generates a compact string that describes the shader. Useful in a list to get an overview
+// of the current flora of shaders.
+std::string VertexShaderDesc(const ShaderID &id);

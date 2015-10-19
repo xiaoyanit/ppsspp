@@ -15,37 +15,42 @@
 // Official SVN repository and contact information can be found at
 // http://code.google.com/p/dolphin-emu/
 
-#ifndef _MEMORYUTIL_H
-#define _MEMORYUTIL_H
+#pragma once
 
 #ifndef _WIN32
 #include <sys/mman.h>
 #endif
-#include <string>
+#include <stdint.h>
 
-void* AllocateExecutableMemory(size_t size, bool low = true);
+#ifdef BLACKBERRY
+using std::size_t;
+#endif
+
+void* AllocateExecutableMemory(size_t size, bool exec = true);
 void* AllocateMemoryPages(size_t size);
 void FreeMemoryPages(void* ptr, size_t size);
 void* AllocateAlignedMemory(size_t size,size_t alignment);
 void FreeAlignedMemory(void* ptr);
 void WriteProtectMemory(void* ptr, size_t size, bool executable = false);
 void UnWriteProtectMemory(void* ptr, size_t size, bool allowExecute = false);
-std::string MemUsage();
+#ifdef __SYMBIAN32__
+void ResetExecutableMemory(void* ptr);
+#endif
 
 inline int GetPageSize() { return 4096; }
 
 template <typename T>
 class SimpleBuf {
 public:
-	SimpleBuf() : buf_(NULL), size_(0) {
+	SimpleBuf() : buf_(0), size_(0) {
 	}
 
-	SimpleBuf(size_t size) : buf_(NULL) {
+	SimpleBuf(size_t size) : buf_(0) {
 		resize(size);
 	}
 
 	~SimpleBuf() {
-		if (buf_ != NULL) {
+		if (buf_ != 0) {
 			FreeMemoryPages(buf_, size_ * sizeof(T));
 		}
 	}
@@ -57,7 +62,7 @@ public:
 	// Doesn't preserve contents.
 	void resize(size_t size) {
 		if (size_ < size) {
-			if (buf_ != NULL) {
+			if (buf_ != 0) {
 				FreeMemoryPages(buf_, size_ * sizeof(T));
 			}
 			buf_ = (T *)AllocateMemoryPages(size * sizeof(T));
@@ -69,7 +74,7 @@ public:
 		return buf_;
 	}
 
-	size_t size() {
+	size_t size() const {
 		return size_;
 	}
 
@@ -77,5 +82,3 @@ private:
 	T *buf_;
 	size_t size_;
 };
-
-#endif

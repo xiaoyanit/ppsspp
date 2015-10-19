@@ -17,24 +17,33 @@
 
 #pragma once
 
-#include "Globals.h"
 #include "Core/System.h"
 #include "Core/CoreParameter.h"
 
 // called from emu thread
+void UpdateRunLoop();
 void Core_Run();
 void Core_Stop();
 void Core_ErrorPause();
 // called from gui
 void Core_EnableStepping(bool step);
 void Core_DoSingleStep();
+void Core_UpdateSingleStep();
 
+typedef void (* Core_ShutdownFunc)();
+void Core_ListenShutdown(Core_ShutdownFunc func);
+void Core_NotifyShutdown();
 void Core_Halt(const char *msg);
 
 bool Core_IsStepping();
 
+bool Core_IsActive();
 bool Core_IsInactive();
 void Core_WaitInactive();
 void Core_WaitInactive(int milliseconds);
 
-void UpdateScreenScale();
+bool UpdateScreenScale(int width, int height, bool smallWindow);
+
+// Don't run the core when minimized etc.
+void Core_NotifyWindowHidden(bool hidden);
+void Core_NotifyActivity();

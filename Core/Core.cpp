@@ -15,20 +15,27 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
+#include <set>
+
 #include "base/NativeApp.h"
 #include "base/display.h"
 #include "base/mutex.h"
 #include "base/timeutil.h"
 #include "input/input_state.h"
+#include "profiler/profiler.h"
 
-#include "Globals.h"
 #include "Core/Core.h"
 #include "Core/Config.h"
 #include "Core/MemMap.h"
+#include "Core/SaveState.h"
 #include "Core/System.h"
 #include "Core/MIPS/MIPS.h"
+
 #ifdef _WIN32
+#ifndef _XBOX
 #include "Windows/OpenGLBase.h"
+#include "Windows/D3D9Base.h"
+#endif
 #include "Windows/InputDevice.h"
 #endif
 
@@ -36,10 +43,19 @@
 
 #include "Core/Debugger/Breakpoints.h"
 
-event m_hStepEvent;
-recursive_mutex m_hStepMutex;
-event m_hInactiveEvent;
-recursive_mutex m_hInactiveMutex;
+// Time until we stop considering the core active without user input.
+// Should this be configurable?  2 hours currently.
+static const double ACTIVITY_IDLE_TIMEOUT = 2.0 * 3600.0;
+
+static event m_hStepEvent;
+static recursive_mutex m_hStepMutex;
+static event m_hInactiveEvent;
+static recursive_mutex m_hInactiveMutex;
+static bool singleStepPending = false;
+static std::set<Core_ShutdownFunc> shutdownFuncs;
+static bool windowHidden = false;
+static double lastActivity = 0.0;
+static double lastKeepAwake = 0.0;
 
 #ifdef _WIN32
 InputState input_state;
@@ -47,111 +63,189 @@ InputState input_state;
 extern InputState input_state;
 #endif
 
-void Core_ErrorPause()
-{
+void Core_NotifyWindowHidden(bool hidden) {
+	windowHidden = hidden;
+	// TODO: Wait until we can react?
+}
+
+void Core_NotifyActivity() {
+	lastActivity = time_now_d();
+}
+
+void Core_ListenShutdown(Core_ShutdownFunc func) {
+	shutdownFuncs.insert(func);
+}
+
+void Core_NotifyShutdown() {
+	for (auto it = shutdownFuncs.begin(); it != shutdownFuncs.end(); ++it) {
+		(*it)();
+	}
+}
+
+void Core_ErrorPause() {
 	Core_UpdateState(CORE_ERROR);
 }
 
-void Core_Halt(const char *msg) 
-{
+void Core_Halt(const char *msg)  {
 	Core_EnableStepping(true);
 	ERROR_LOG(CPU, "CPU HALTED : %s",msg);
 	_dbg_update_();
 }
 
-void Core_Stop()
-{
+void Core_Stop() {
 	Core_UpdateState(CORE_POWERDOWN);
+	Core_NotifyShutdown();
 	m_hStepEvent.notify_one();
 }
 
-bool Core_IsStepping()
-{
+bool Core_IsStepping() {
 	return coreState == CORE_STEPPING || coreState == CORE_POWERDOWN;
 }
 
-bool Core_IsInactive()
-{
+bool Core_IsActive() {
+	return coreState == CORE_RUNNING || coreState == CORE_NEXTFRAME || coreStatePending;
+}
+
+bool Core_IsInactive() {
 	return coreState != CORE_RUNNING && coreState != CORE_NEXTFRAME && !coreStatePending;
 }
 
-void Core_WaitInactive()
-{
-	while (!Core_IsInactive())
+void Core_WaitInactive() {
+	while (Core_IsActive()) {
 		m_hInactiveEvent.wait(m_hInactiveMutex);
-}
-
-void Core_WaitInactive(int milliseconds)
-{
-	m_hInactiveEvent.wait_for(m_hInactiveMutex, milliseconds);
-}
-
-void UpdateScreenScale() {
-	dp_xres = PSP_CoreParameter().pixelWidth;
-	dp_yres = PSP_CoreParameter().pixelHeight;
-#ifdef _WIN32
-	if (g_Config.iWindowZoom == 1)
-	{
-		dp_xres *= 2;
-		dp_yres *= 2;
 	}
-#endif
-	pixel_xres = PSP_CoreParameter().pixelWidth;
-	pixel_yres = PSP_CoreParameter().pixelHeight;
+}
+
+void Core_WaitInactive(int milliseconds) {
+	if (Core_IsActive()) {
+		m_hInactiveEvent.wait_for(m_hInactiveMutex, milliseconds);
+	}
+}
+
+bool UpdateScreenScale(int width, int height, bool smallWindow) {
 	g_dpi = 72;
 	g_dpi_scale = 1.0f;
-	pixel_in_dps = (float)pixel_xres / dp_xres;
+#if defined(__SYMBIAN32__)
+	g_dpi_scale = 1.4f;
+#elif defined(_WIN32)
+	if (smallWindow) {
+		g_dpi_scale = 2.0f;
+	}
+#endif
+	pixel_in_dps = 1.0f / g_dpi_scale;
+
+	int new_dp_xres = width * g_dpi_scale;
+	int new_dp_yres = height * g_dpi_scale;
+
+	bool dp_changed = new_dp_xres != dp_xres || new_dp_yres != dp_yres;
+	bool px_changed = pixel_xres != width || pixel_yres != height;
+
+	if (dp_changed || px_changed) {
+		dp_xres = new_dp_xres;
+		dp_yres = new_dp_yres;
+		pixel_xres = width;
+		pixel_yres = height;
+
+		NativeResized();
+		return true;
+	}
+	return false;
 }
 
-void Core_RunLoop()
-{
-	while (!coreState) {
-		time_update();
-		double startTime = time_now_d();
-		UpdateScreenScale();
-		{
-			{
-#ifdef _WIN32
-				lock_guard guard(input_state.lock);
-				input_state.pad_buttons = 0;
-				input_state.pad_lstick_x = 0;
-				input_state.pad_lstick_y = 0;
-				input_state.pad_rstick_x = 0;
-				input_state.pad_rstick_y = 0;
-				host->PollControllers(input_state);
-				UpdateInputState(&input_state);
-#endif
-			}
-			NativeUpdate(input_state);
-			EndInputState(&input_state);
-		}
+void UpdateRunLoop() {
+	if (windowHidden && g_Config.bPauseWhenMinimized) {
+		sleep_ms(16);
+		return;
+	}
+	NativeUpdate(input_state);
+
+	{
+		lock_guard guard(input_state.lock);
+		EndInputState(&input_state);
+	}
+
+	if (GetUIState() != UISTATE_EXIT) {
 		NativeRender();
+	}
+}
+
+#if defined(USING_WIN_UI)
+
+void GPU_SwapBuffers() {
+	switch (g_Config.iGPUBackend) {
+	case GPU_BACKEND_OPENGL:
+		GL_SwapBuffers();
+		break;
+	case GPU_BACKEND_DIRECT3D9:
+		D3D9_SwapBuffers();
+		break;
+	}
+}
+
+#endif
+
+void Core_RunLoop() {
+	while ((GetUIState() != UISTATE_INGAME || !PSP_IsInited()) && GetUIState() != UISTATE_EXIT) {
 		time_update();
+#if defined(USING_WIN_UI)
+		double startTime = time_now_d();
+		UpdateRunLoop();
+
 		// Simple throttling to not burn the GPU in the menu.
-#ifdef _WIN32
-		if (globalUIState != UISTATE_INGAME) {
-			double diffTime = time_now_d() - startTime;
-			int sleepTime = (int) (1000000.0 / 60.0) - (int) (diffTime * 1000000.0);
-			if (sleepTime > 0)
-				Sleep(sleepTime / 1000);
-			GL_SwapBuffers();
-		} else if (!Core_IsStepping()) {
-			GL_SwapBuffers();
+		time_update();
+		double diffTime = time_now_d() - startTime;
+		int sleepTime = (int)(1000.0 / 60.0) - (int)(diffTime * 1000.0);
+		if (sleepTime > 0)
+			Sleep(sleepTime);
+		if (!windowHidden) {
+			GPU_SwapBuffers();
+		}
+#else
+		UpdateRunLoop();
+#endif
+	}
+
+	while (!coreState && GetUIState() == UISTATE_INGAME) {
+		time_update();
+		UpdateRunLoop();
+#if defined(USING_WIN_UI)
+		if (!windowHidden && !Core_IsStepping()) {
+			GPU_SwapBuffers();
+
+			// Keep the system awake for longer than normal for cutscenes and the like.
+			const double now = time_now_d();
+			if (now < lastActivity + ACTIVITY_IDLE_TIMEOUT) {
+				// Only resetting it ever prime number seconds in case the call is expensive.
+				// Using a prime number to ensure there's no interaction with other periodic events.
+				if (now - lastKeepAwake > 89.0 || now < lastKeepAwake) {
+					SetThreadExecutionState(ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED);
+					lastKeepAwake = now;
+				}
+			}
 		}
 #endif
 	}
 }
 
-void Core_DoSingleStep()
-{
+void Core_DoSingleStep() {
+	singleStepPending = true;
 	m_hStepEvent.notify_one();
 }
 
-void Core_SingleStep()
-{
+void Core_UpdateSingleStep() {
+	m_hStepEvent.notify_one();
+}
+
+void Core_SingleStep() {
 	currentMIPS->SingleStep();
 }
 
+static inline void CoreStateProcessed() {
+	if (coreStatePending) {
+		coreStatePending = false;
+		m_hInactiveEvent.notify_one();
+	}
+}
 
 // Some platforms, like Android, do not call this function but handle things on their own.
 void Core_Run()
@@ -159,26 +253,43 @@ void Core_Run()
 #if defined(_DEBUG)
 	host->UpdateDisassembly();
 #endif
-#if !defined(USING_QT_UI) || defined(USING_GLES2)
+#if !defined(USING_QT_UI) || defined(MOBILE_DEVICE)
 	while (true)
 #endif
 	{
 reswitch:
+		if (GetUIState() != UISTATE_INGAME) {
+			CoreStateProcessed();
+			if (GetUIState() == UISTATE_EXIT) {
+				return;
+			}
+			Core_RunLoop();
+#if defined(USING_QT_UI) && !defined(MOBILE_DEVICE)
+			return;
+#else
+			continue;
+#endif
+		}
+
 		switch (coreState)
 		{
 		case CORE_RUNNING:
-			//1: enter a fast runloop
+			// enter a fast runloop
 			Core_RunLoop();
 			break;
 
 		// We should never get here on Android.
 		case CORE_STEPPING:
-			if (coreStatePending) {
-				coreStatePending = false;
-				m_hInactiveEvent.notify_one();
+			singleStepPending = false;
+			CoreStateProcessed();
+
+			// Check if there's any pending savestate actions.
+			SaveState::Process();
+			if (coreState == CORE_POWERDOWN) {
+				return;
 			}
 
-			//1: wait for step command..
+			// wait for step command..
 #if defined(USING_QT_UI) || defined(_DEBUG)
 			host->UpdateDisassembly();
 			host->UpdateMemView();
@@ -190,31 +301,31 @@ reswitch:
 #if defined(USING_QT_UI) || defined(_DEBUG)
 			host->SendCoreWait(false);
 #endif
-			if (coreState == CORE_POWERDOWN)
-				return;
+#if defined(USING_QT_UI) && !defined(MOBILE_DEVICE)
 			if (coreState != CORE_STEPPING)
-#if defined(USING_QT_UI) && !defined(USING_GLES2)
 				return;
-#else
-				goto reswitch;
 #endif
+			// No step pending?  Let's go back to the wait.
+			if (!singleStepPending || coreState != CORE_STEPPING) {
+				if (coreState == CORE_POWERDOWN) {
+					return;
+				}
+				goto reswitch;
+			}
 
-			currentCPU = &mipsr4k;
 			Core_SingleStep();
-			//4: update disasm dialog
+			// update disasm dialog
 #if defined(USING_QT_UI) || defined(_DEBUG)
 			host->UpdateDisassembly();
 			host->UpdateMemView();
 #endif
 			break;
 
+		case CORE_POWERUP:
 		case CORE_POWERDOWN:
 		case CORE_ERROR:
-			//1: Exit loop!!
-			if (coreStatePending) {
-				coreStatePending = false;
-				m_hInactiveEvent.notify_one();
-			}
+			// Exit loop!!
+			CoreStateProcessed();
 
 			return;
 
@@ -226,19 +337,15 @@ reswitch:
 }
 
 
-void Core_EnableStepping(bool step)
-{
-	if (step)
-	{
+void Core_EnableStepping(bool step) {
+	if (step) {
 		sleep_ms(1);
 #if defined(_DEBUG)
 		host->SetDebugMode(true);
 #endif
 		m_hStepEvent.reset();
 		Core_UpdateState(CORE_STEPPING);
-	}
-	else
-	{
+	} else {
 #if defined(_DEBUG)
 		host->SetDebugMode(false);
 #endif

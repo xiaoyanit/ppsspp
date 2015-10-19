@@ -15,10 +15,11 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
-
 #pragma once
 
 #include <string>
+
+#include "Core/Compatibility.h"
 
 enum CPUCore {
 	CPU_INTERPRETER,
@@ -29,36 +30,31 @@ enum GPUCore {
 	GPU_NULL,
 	GPU_GLES,
 	GPU_SOFTWARE,
+	GPU_DIRECTX9,
 };
 
-struct CoreParameter
-{
-	CoreParameter() : collectEmuLog(0), unthrottle(false), updateRecent(true) {}
-	// 0 = Interpreter
-	// 1 = Jit
-	// 2 = JitIL
+class FileLoader;
+
+// PSP_CoreParameter()
+struct CoreParameter {
+	CoreParameter() : collectEmuLog(0), unthrottle(false), fpsLimit(0), updateRecent(true), freezeNext(false), frozen(false), mountIsoLoader(nullptr) {}
 	CPUCore cpuCore;
 	GPUCore gpuCore;
 	bool enableSound;  // there aren't multiple sound cores.
 
 	std::string fileToStart;
-	std::string mountIso;  // If non-empty, and fileToStart is an ELF or PBP, will mount this ISO in the background.
+	std::string mountIso;  // If non-empty, and fileToStart is an ELF or PBP, will mount this ISO in the background to umd1:.
+	std::string mountRoot;  // If non-empty, and fileToStart is an ELF or PBP, mount this as host0: / umd0:.
+	std::string errorString;
 
 	bool startPaused;
-	bool disableG3Dlog;
-	bool enableDebugging;  // enables breakpoints and other time-consuming debugger features
 	bool printfEmuLog;  // writes "emulator:" logging to stdout
 	std::string *collectEmuLog;
 	bool headLess;   // Try to avoid messageboxes etc
-	bool useMediaEngine;
 
 	// Internal PSP resolution
 	int renderWidth;
 	int renderHeight;
-
-	// Virtual (dpi-adjusted) output resolution
-	int outputWidth;
-	int outputHeight;
 
 	// Actual pixel output resolution (for use by glViewport and the like)
 	int pixelWidth;
@@ -69,4 +65,12 @@ struct CoreParameter
 	int fpsLimit;
 
 	bool updateRecent;
+
+	// Freeze-frame. For nvidia perfhud profiling. Developers only.
+	bool freezeNext;
+	bool frozen;
+
+	FileLoader *mountIsoLoader;
+
+	Compatibility compat;
 };

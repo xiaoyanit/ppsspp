@@ -18,23 +18,29 @@
 #include "Core/Reporting.h"
 
 #include "Common/CPUDetect.h"
-#include "Common/StdThread.h"
 #include "Core/CoreTiming.h"
 #include "Core/Config.h"
+#include "Core/CwCheat.h"
+#include "Core/SaveState.h"
 #include "Core/System.h"
+#include "Core/FileSystems/MetaFileSystem.h"
 #include "Core/HLE/sceDisplay.h"
 #include "Core/HLE/sceKernelMemory.h"
+#include "Core/ELF/ParamSFO.h"
 #include "GPU/GPUInterface.h"
 #include "GPU/GPUState.h"
-
+#include "GPU/GLES/Framebuffer.h"
 #include "net/http_client.h"
 #include "net/resolve.h"
 #include "net/url.h"
 
+#include "base/stringutil.h"
 #include "base/buffer.h"
+#include "thread/thread.h"
+#include "file/zip_read.h"
 
+#include <set>
 #include <stdlib.h>
-#include <string>
 #include <cstdarg>
 
 namespace Reporting
@@ -47,10 +53,17 @@ namespace Reporting
 	static u32 spamProtectionCount = 0;
 	// Temporarily stores a reference to the hostname.
 	static std::string lastHostname;
+	// Keeps track of report-only-once identifiers.  Since they're always constants, a pointer is okay.
+	static std::set<const char *> logOnceUsed;
+	// Keeps track of whether a harmful setting was ever used.
+	static bool everUnsupported = false;
+	// Support is cached here to avoid checking it on every single request.
+	static bool currentSupported = false;
 
 	enum RequestType
 	{
 		MESSAGE,
+		COMPAT,
 	};
 
 	struct Payload
@@ -58,6 +71,9 @@ namespace Reporting
 		RequestType type;
 		std::string string1;
 		std::string string2;
+		int int1;
+		int int2;
+		int int3;
 	};
 	static Payload payloadBuffer[PAYLOAD_BUFFER_SIZE];
 	static int payloadBufferPos = 0;
@@ -77,16 +93,16 @@ namespace Reporting
 			return g_Config.sReportHost.npos;
 
 		// IPv6 literal?
-		std::string host = ServerHost();
-		if (host[0] == '[')
+		std::string hostString = ServerHost();
+		if (hostString[0] == '[')
 		{
-			size_t length = host.find("]:");
-			if (length != host.npos)
+			size_t length = hostString.find("]:");
+			if (length != hostString.npos)
 				++length;
 			return length;
 		}
 		else
-			return host.find(':');
+			return hostString.find(':');
 	}
 
 	// Returns only the hostname part (e.g. "report.ppsspp.org".)
@@ -129,24 +145,23 @@ namespace Reporting
 		return ++spamProtectionCount >= SPAM_LIMIT;
 	}
 
-	bool SendReportRequest(const char *uri, const std::string &data, Buffer *output = NULL)
+	bool SendReportRequest(const char *uri, const std::string &data, const std::string &mimeType, Buffer *output = NULL)
 	{
 		bool result = false;
+		net::AutoInit netInit;
 		http::Client http;
 		Buffer theVoid;
 
 		if (output == NULL)
 			output = &theVoid;
 
-		net::Init();
 		if (http.Resolve(ServerHostname(), ServerPort()))
 		{
 			http.Connect();
-			http.POST("/report/message", data, "application/x-www-form-urlencoded", output);
+			http.POST(uri, data, mimeType, output);
 			http.Disconnect();
 			result = true;
 		}
-		net::Shutdown();
 
 		return result;
 	}
@@ -174,51 +189,124 @@ namespace Reporting
 		return "Mac";
 #elif defined(__SYMBIAN32__)
 		return "Symbian";
-#elif defined(__FreeBSD__)
-		return "BSD";
 #elif defined(BLACKBERRY)
 		return "Blackberry";
 #elif defined(LOONGSON)
 		return "Loongson";
-#elif defined(MEEGO_EDITION_HARMATTAN)
-		return "Nokia N9/N950";
+#elif defined(MAEMO)
+		return "Nokia Maemo";
 #elif defined(__linux__)
 		return "Linux";
+#elif defined(__Bitrig__)
+		return "Bitrig";
+#elif defined(__DragonFly__)
+		return "DragonFly";
+#elif defined(__FreeBSD__)
+		return "FreeBSD";
+#elif defined(__NetBSD__)
+		return "NetBSD";
+#elif defined(__OpenBSD__)
+		return "OpenBSD";
 #else
 		return "Unknown";
 #endif
+	}
+
+	void Init()
+	{
+		// New game, clean slate.
+		spamProtectionCount = 0;
+		logOnceUsed.clear();
+		everUnsupported = false;
+		currentSupported = IsSupported();
+	}
+
+	void Shutdown()
+	{
+		// Just so it can be enabled in the menu again.
+		Init();
+	}
+
+	void DoState(PointerWrap &p)
+	{
+		const int LATEST_VERSION = 1;
+		auto s = p.Section("Reporting", 0, LATEST_VERSION);
+		if (!s || s < LATEST_VERSION) {
+			// Don't report from old savestates, they may "entomb" bugs.
+			everUnsupported = true;
+			return;
+		}
+
+		p.Do(everUnsupported);
+	}
+
+	void UpdateConfig()
+	{
+		currentSupported = IsSupported();
+		if (!currentSupported && PSP_IsInited())
+			everUnsupported = true;
+	}
+
+	bool ShouldLogOnce(const char *identifier)
+	{
+		// True if it wasn't there already -> so yes, log.
+		return logOnceUsed.insert(identifier).second;
+	}
+
+	void AddGameInfo(UrlEncoder &postdata)
+	{
+		// TODO: Maybe ParamSFOData shouldn't include nulls in std::strings?  Don't work to break savedata, though...
+		postdata.Add("game", StripTrailingNull(g_paramSFO.GetValueString("DISC_ID")) + "_" + StripTrailingNull(g_paramSFO.GetValueString("DISC_VERSION")));
+		postdata.Add("game_title", StripTrailingNull(g_paramSFO.GetValueString("TITLE")));
+		postdata.Add("sdkver", sceKernelGetCompiledSdkVersion());
+	}
+
+	void AddSystemInfo(UrlEncoder &postdata)
+	{
+		std::string gpuPrimary, gpuFull;
+		if (gpu)
+			gpu->GetReportingInfo(gpuPrimary, gpuFull);
+		
+		postdata.Add("version", PPSSPP_GIT_VERSION);
+		postdata.Add("gpu", gpuPrimary);
+		postdata.Add("gpu_full", gpuFull);
+		postdata.Add("cpu", cpu_info.Summarize());
+		postdata.Add("platform", GetPlatformIdentifer());
+	}
+
+	void AddConfigInfo(UrlEncoder &postdata)
+	{
+		postdata.Add("pixel_width", PSP_CoreParameter().pixelWidth);
+		postdata.Add("pixel_height", PSP_CoreParameter().pixelHeight);
+
+		g_Config.GetReportingInfo(postdata);
+	}
+
+	void AddGameplayInfo(UrlEncoder &postdata)
+	{
+		// Just to get an idea of how long they played.
+		postdata.Add("ticks", (const uint64_t)CoreTiming::GetTicks());
+
+		if (g_Config.iShowFPSCounter && g_Config.iShowFPSCounter < 4)
+		{
+			float vps, fps;
+			__DisplayGetAveragedFPS(&vps, &fps);
+			postdata.Add("vps", vps);
+			postdata.Add("fps", fps);
+		}
+
+		postdata.Add("savestate_used", SaveState::HasLoadedState());
 	}
 
 	int Process(int pos)
 	{
 		Payload &payload = payloadBuffer[pos];
 
-		std::string gpuPrimary, gpuFull;
-		if (gpu)
-			gpu->GetReportingInfo(gpuPrimary, gpuFull);
-
 		UrlEncoder postdata;
-		postdata.Add("version", PPSSPP_GIT_VERSION);
-		// TODO: Maybe ParamSFOData shouldn't include nulls in std::strings?  Don't work to break savedata, though...
-		postdata.Add("game", StripTrailingNull(g_paramSFO.GetValueString("DISC_ID")) + "_" + StripTrailingNull(g_paramSFO.GetValueString("DISC_VERSION")));
-		postdata.Add("game_title", StripTrailingNull(g_paramSFO.GetValueString("TITLE")));
-		postdata.Add("gpu", gpuPrimary);
-		postdata.Add("gpu_full", gpuFull);
-		postdata.Add("cpu", cpu_info.Summarize());
-		postdata.Add("platform", GetPlatformIdentifer());
-		postdata.Add("sdkver", sceKernelGetCompiledSdkVersion());
-		postdata.Add("pixel_width", PSP_CoreParameter().pixelWidth);
-		postdata.Add("pixel_height", PSP_CoreParameter().pixelHeight);
-		postdata.Add("ticks", (const uint64_t)CoreTiming::GetTicks());
-
-		if (g_Config.bShowFPSCounter)
-		{
-			float vps, fps;
-			__DisplayGetAveragedFPS(&vps, &fps);
-			postdata.Add("vps", vps);
-		}
-
-		// TODO: Settings, savestate/savedata status, some measure of speed/fps?
+		AddSystemInfo(postdata);
+		AddGameInfo(postdata);
+		AddConfigInfo(postdata);
+		AddGameplayInfo(postdata);
 
 		switch (payload.type)
 		{
@@ -228,16 +316,58 @@ namespace Reporting
 			payload.string1.clear();
 			payload.string2.clear();
 
-			SendReportRequest("/report/message", postdata.ToString());
+			postdata.Finish();
+			SendReportRequest("/report/message", postdata.ToString(), postdata.GetMimeType());
+			break;
+
+		case COMPAT:
+			postdata.Add("compat", payload.string1);
+			postdata.Add("graphics", StringFromFormat("%d", payload.int1));
+			postdata.Add("speed", StringFromFormat("%d", payload.int2));
+			postdata.Add("gameplay", StringFromFormat("%d", payload.int3));
+			payload.string1.clear();
+
+			postdata.Finish();
+			SendReportRequest("/report/compat", postdata.ToString(), postdata.GetMimeType());
 			break;
 		}
 
 		return 0;
 	}
 
+	bool IsSupported()
+	{
+		// Disabled when using certain hacks, because they make for poor reports.
+		if (g_Config.iRenderingMode >= FBO_READFBOMEMORY_MIN)
+			return false;
+		if (g_Config.bTimerHack)
+			return false;
+		if (CheatsInEffect())
+			return false;
+		// Not sure if we should support locked cpu at all, but definitely not far out values.
+		if (g_Config.iLockedCPUSpeed != 0 && (g_Config.iLockedCPUSpeed < 111 || g_Config.iLockedCPUSpeed > 333))
+			return false;
+		// Don't allow builds without version info from git.  They're useless for reporting.
+		if (strcmp(PPSSPP_GIT_VERSION, "unknown") == 0)
+			return false;
+
+		// Some users run the exe from a zip or something, and don't have fonts.
+		// This breaks things, but let's not report it since it's confusing.
+#if defined(USING_WIN_UI) || defined(APPLE)
+		if (!File::Exists(g_Config.flash0Directory + "/font/jpn0.pgf"))
+			return false;
+#else
+		FileInfo fo;
+		if (!VFSGetFileInfo("flash0/font/jpn0.pgf", &fo))
+			return false;
+#endif
+
+		return !everUnsupported;
+	}
+
 	bool IsEnabled()
 	{
-		if (g_Config.sReportHost.empty())
+		if (g_Config.sReportHost.empty() || (!currentSupported && PSP_IsInited()))
 			return false;
 		// Disabled by default for now.
 		if (g_Config.sReportHost.compare("default") == 0)
@@ -245,12 +375,27 @@ namespace Reporting
 		return true;
 	}
 
+	void Enable(bool flag, std::string host)
+	{
+		if (IsSupported() && IsEnabled() != flag)
+		{
+			// "" means explicitly disabled.  Don't ever turn on by default.
+			// "default" means it's okay to turn it on by default.
+			g_Config.sReportHost = flag ? host : "";
+		}
+	}
+
+	void EnableDefault()
+	{
+		g_Config.sReportHost = "default";
+	}
+
 	void ReportMessage(const char *message, ...)
 	{
 		if (!IsEnabled() || CheckSpamLimited())
 			return;
 
-		const int MESSAGE_BUFFER_SIZE = 32768;
+		const int MESSAGE_BUFFER_SIZE = 65536;
 		char temp[MESSAGE_BUFFER_SIZE];
 
 		va_list args;
@@ -264,6 +409,38 @@ namespace Reporting
 		payload.type = MESSAGE;
 		payload.string1 = message;
 		payload.string2 = temp;
+
+		std::thread th(Process, pos);
+		th.detach();
+	}
+
+	void ReportMessageFormatted(const char *message, const char *formatted)
+	{
+		if (!IsEnabled() || CheckSpamLimited())
+			return;
+
+		int pos = payloadBufferPos++ % PAYLOAD_BUFFER_SIZE;
+		Payload &payload = payloadBuffer[pos];
+		payload.type = MESSAGE;
+		payload.string1 = message;
+		payload.string2 = formatted;
+
+		std::thread th(Process, pos);
+		th.detach();
+	}
+
+	void ReportCompatibility(const char *compat, int graphics, int speed, int gameplay)
+	{
+		if (!IsEnabled())
+			return;
+
+		int pos = payloadBufferPos++ % PAYLOAD_BUFFER_SIZE;
+		Payload &payload = payloadBuffer[pos];
+		payload.type = COMPAT;
+		payload.string1 = compat;
+		payload.int1 = graphics;
+		payload.int2 = speed;
+		payload.int3 = gameplay;
 
 		std::thread th(Process, pos);
 		th.detach();

@@ -1,104 +1,130 @@
-TARGET = PPSSPPQt
+TARGET = ppsspp
 
+# Main Qt modules
 QT += core gui opengl
-CONFIG += mobility
-MOBILITY += multimedia
-win32: QT += multimedia
-VERSION = 0.7.6
+
+# PPSSPP Modules
+symbian: LIBS += -lCore.lib -lGPU.lib -lCommon.lib -lNative.lib
+else: LIBS += -lCore -lGPU -lCommon -lNative
 
 include(Settings.pri)
-mobile_platform: MOBILITY += sensors
-symbian: MOBILITY += systeminfo
 
-# Libs
-symbian: LIBS += -lCore.lib -lCommon.lib -lNative.lib
-qnx: LIBS += -L. -lCore -lCommon -lNative -lscreen -lz
-win32 {
-	CONFIG(release, debug|release) {
-		LIBS += -L$$OUT_PWD/release
-	} else {
-		LIBS += -L$$OUT_PWD/debug
-	}
-	LIBS += -lCore -lCommon -lNative -lwinmm -lws2_32
+# To support Sailfish which is stuck on GCC 4.6
+linux-g++:system($$QMAKE_CXX --version | grep "4.6."): DEFINES+=override
+
+lessThan(QT_MAJOR_VERSION, 5) {
+	macx: error(PPSSPP requires Qt5 for OS X but $$[QT_VERSION] was detected.)
+	else:lessThan(QT_MINOR_VERSION, 7): error(PPSSPP requires Qt 4.7 or newer but Qt $$[QT_VERSION] was detected.)
 }
-linux {
-	LIBS += -L. -lCore -lCommon -lNative
-	PRE_TARGETDEPS += ./libCommon.a ./libCore.a ./libNative.a
-	!mobile_platform {
-		CONFIG += link_pkgconfig
-		packagesExist(sdl) {
-			DEFINES += QT_HAS_SDL
-			PKGCONFIG += sdl
+
+# Extra Qt modules
+greaterThan(QT_MAJOR_VERSION,4) {
+	QT += widgets
+	# Most platforms don't have this pre-installed. Especially hard to get on OSX.
+	exists($$[QT_INSTALL_HEADERS]/QtSystemInfo) {
+		QT += systeminfo
+		DEFINES += QT_HAS_SYSTEMINFO
+	}
+	mobile_platform: QT += sensors
+} else:!maemo5:mobile_platform {
+	CONFIG += mobility
+	MOBILITY += sensors
+	symbian: MOBILITY += systeminfo feedback
+}
+
+# External (platform-dependant) libs
+
+macx|equals(PLATFORM_NAME, "linux") {
+	PRE_TARGETDEPS += $$CONFIG_DIR/libCommon.a $$CONFIG_DIR/libCore.a $$CONFIG_DIR/libGPU.a $$CONFIG_DIR/libNative.a
+	CONFIG += link_pkgconfig
+	packagesExist(sdl2) {
+		DEFINES += SDL
+		SOURCES += $$P/SDL/SDLJoystick.cpp
+		HEADERS += $$P/SDL/SDLJoystick.h
+		PKGCONFIG += sdl2
+		macx {
+			LIBS += -F/Library/Frameworks -framework SDL
+			INCLUDEPATH += /Library/Frameworks/SDL.framework/Versions/A/Headers
 		}
 	}
 }
 
+exists( /usr/include/GL/glew.h ) {
+	LIBS += -lGLEW
+}
+
+exists( /usr/include/snappy-c.h ) {
+	LIBS += -lsnappy
+}
+
+exists( /usr/include/zip.h ) {
+	LIBS += -lzip
+}
+
+unix:contains(QT_CONFIG, system-zlib) {
+	LIBS += -lz
+}
+
+# Qt Multimedia (if SDL is not found)
+!contains(DEFINES, SDL) {
+	lessThan(QT_MAJOR_VERSION,5):!exists($$[QT_INSTALL_HEADERS]/QtMultimedia) {
+		# Fallback to mobility audio
+		CONFIG += mobility
+		MOBILITY += multimedia
+	}
+	else: QT += multimedia
+}
+
 # Main
-SOURCES += ../native/base/QtMain.cpp
-HEADERS += ../native/base/QtMain.h
-
-# Native
-SOURCES += ../UI/EmuScreen.cpp \
-	../UI/MenuScreens.cpp \
-	../UI/GamepadEmu.cpp \
-	../UI/GameInfoCache.cpp \
-	../UI/OnScreenDisplay.cpp \
-	../android/jni/TestRunner.cpp \
-	../UI/UIShader.cpp \
-	../UI/ui_atlas.cpp
-
-INCLUDEPATH += .. ../Common ../native
-
-# Temporarily only use new UI for Linux desktop
-linux:!mobile_platform {
-	MOC_DIR = moc
-	UI_DIR = ui
-	RCC_DIR = rcc
-	SOURCES += *.cpp
-	HEADERS += *.h
-	FORMS += *.ui
-	RESOURCES += resources.qrc
-	INCLUDEPATH += ../Qt
-} else {
-	SOURCES += ../UI/NativeApp.cpp
-}
-RESOURCES += assets.qrc
-
-# Translations
-TRANSLATIONS = $$files(languages/ppsspp_*.ts)
-
-lang.name = lrelease ${QMAKE_FILE_IN}
-lang.input = TRANSLATIONS
-lang.output = ${QMAKE_FILE_PATH}/${QMAKE_FILE_BASE}.qm
-lang.commands = $$[QT_INSTALL_BINS]/lrelease ${QMAKE_FILE_IN}
-lang.CONFIG = no_link
-QMAKE_EXTRA_COMPILERS += lang
-PRE_TARGETDEPS += compiler_lang_make_all
-
-# Packaging
+SOURCES += $$P/ext/native/base/QtMain.cpp
+HEADERS += $$P/ext/native/base/QtMain.h
 symbian {
-	deploy.pkg_prerules = "$${LITERAL_HASH}{\"PPSSPP\"}, (0xE0095B1D), 0, 7, 6, TYPE=SA" "%{\"Qtness\"}" ":\"Qtness\""
-	assets.sources = ../assets/flash ../lang
-	assets.path = E:/PPSSPP
-	DEPLOYMENT += deploy assets
-	ICON = ../assets/icon.svg
-	# 268MB maximum
-	TARGET.EPOCHEAPSIZE = 0x40000 0x10000000
-	TARGET.EPOCSTACKSIZE = 0x10000
+	SOURCES += $$P/ext/native/base/SymbianMediaKeys.cpp
+	HEADERS += $$P/ext/native/base/SymbianMediaKeys.h
 }
 
-contains(MEEGO_EDITION,harmattan) {
-	target.path = /opt/PPSSPP/bin
-	assets.files = ../assets/flash ../lang
-	assets.path = /opt/PPSSPP
-	desktopfile.files = PPSSPP.desktop
-	desktopfile.path = /usr/share/applications
-	icon.files = ../assets/icon-114.png
-	icon.path = /usr/share/icons/hicolor/114x114/apps
-	INSTALLS += target assets desktopfile icon
-	# Booster
-	QMAKE_CXXFLAGS += -fPIC -fvisibility=hidden -fvisibility-inlines-hidden
-	QMAKE_LFLAGS += -pie -rdynamic
-	CONFIG += qt-boostable
+# UI
+SOURCES += $$P/UI/*.cpp \
+	$$P/android/jni/TestRunner.cpp
+arm:android: SOURCES += $$P/android/jni/ArmEmitterTest.cpp
+HEADERS += $$P/UI/*.h
+
+INCLUDEPATH += $$P $$P/Common $$P/ext/native $$P/ext/native/ext
+!exists( /usr/include/GL/glew.h ) {
+	INCLUDEPATH += $$P/ext/native/ext/glew
 }
+
+mobile_platform {
+	!no_assets: RESOURCES += $$P/Qt/assets.qrc
+} else {
+	# TODO: Rewrite Debugger with same backend as Windows version
+	# Do not use .ui forms. Use Qt5 + C++11 features to minimise code
+	SOURCES += $$P/Qt/*.cpp $$P/Qt/Debugger/*.cpp
+	HEADERS += $$P/Qt/*.h $$P/Qt/Debugger/*.h
+	FORMS += $$P/Qt/Debugger/*.ui
+	!no_assets: RESOURCES += $$P/Qt/desktop_assets.qrc
+	INCLUDEPATH += $$P/Qt $$P/Qt/Debugger
+	
+	# Creating translations should be done by Qt, really
+	isEmpty(LREL_TOOL): LREL_TOOL = lrelease
+	# Grab all possible directories (win32/unix)
+	win32: PATHS = $$split($$(PATH), ;)
+	else: PATHS = $$split($$(PATH), :)
+	# Either -qt4 or -qt5 will work.
+	for(bin, PATHS): exists($${bin}/$${LREL_TOOL}-qt4): LREL_TOOL=$${bin}/$${LREL_TOOL}-qt4
+	for(bin, PATHS): exists($${bin}/$${LREL_TOOL}-qt5): LREL_TOOL=$${bin}/$${LREL_TOOL}-qt5
+
+	# Translations
+	TRANSLATIONS = $$files($$P/Qt/languages/ppsspp_*.ts)
+
+	lang.name = $$LREL_TOOL ${QMAKE_FILE_IN}
+	lang.input = TRANSLATIONS
+	lang.output = ${QMAKE_FILE_PATH}/${QMAKE_FILE_BASE}.qm
+
+	lang.commands = $$LREL_TOOL ${QMAKE_FILE_IN}
+	lang.CONFIG = no_link
+	QMAKE_EXTRA_COMPILERS += lang
+	PRE_TARGETDEPS += compiler_lang_make_all
+}
+
 

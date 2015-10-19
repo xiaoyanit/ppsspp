@@ -18,14 +18,15 @@
 #include <time.h>
 
 #ifdef _WIN32
-#include <Windows.h>
+#include "CommonWindows.h"
+#ifndef _XBOX
 #include <mmsystem.h>
+#endif
 #include <sys/timeb.h>
 #else
 #include <sys/time.h>
 #endif
 
-#include "Common.h"
 #include "Timer.h"
 #include "StringUtils.h"
 
@@ -34,9 +35,16 @@ namespace Common
 
 u32 Timer::GetTimeMs()
 {
-#ifdef _WIN32
+#ifdef _XBOX
+	return GetTickCount();
+#elif defined(_WIN32)
 	return timeGetTime();
+#elif defined(BLACKBERRY)
+	struct timespec time;
+	clock_gettime(CLOCK_MONOTONIC, &time);
+	return (u32)(time.tv_sec * 1000 + time.tv_nsec / 1000000);
 #else
+	// REALTIME is probably not a good idea for measuring updates.
 	struct timeval t;
 	(void)gettimeofday(&t, NULL);
 	return ((u32)(t.tv_sec * 1000 + t.tv_usec / 1000));
@@ -85,7 +93,7 @@ void Timer::Update()
 // -------------------------------------
 
 // Get the number of milliseconds since the last Update()
-u64 Timer::GetTimeDifference()
+u64 Timer::GetTimeDifference() const
 {
 	return GetTimeMs() - m_LastTime;
 }
@@ -104,7 +112,7 @@ void Timer::WindBackStartingTime(u64 WindBack)
 }
 
 // Get the time elapsed since the Start()
-u64 Timer::GetTimeElapsed()
+u64 Timer::GetTimeElapsed() const
 {
 	// If we have not started yet, return 1 (because then I don't
 	// have to change the FPS calculation in CoreRerecording.cpp .
@@ -145,14 +153,14 @@ std::string Timer::GetTimeElapsedFormatted() const
 // Get current time
 void Timer::IncreaseResolution()
 {
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(_XBOX)
 	timeBeginPeriod(1);
 #endif
 }
 
 void Timer::RestoreResolution()
 {
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(_XBOX)
 	timeEndPeriod(1);
 #endif
 }

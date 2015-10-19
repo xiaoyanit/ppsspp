@@ -16,33 +16,62 @@
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
 #include <string>
+#include <vector>
 
-class PointerWrap;
+#include "base/functional.h"
+#include "Common/ChunkFile.h"
 
 namespace SaveState
 {
-	typedef void (*Callback)(bool status, void *cbUserData);
+	typedef std::function<void(bool status, void *cbUserData)> Callback;
 
 	// TODO: Better place for this?
-	const int REVISION = 2;
-	const int SAVESTATESLOTS = 4;
+	const int REVISION = 4;
+	const int SAVESTATESLOTS = 5;
 
 	void Init();
 
-	void SaveSlot(int slot, Callback callback, void *cbUserData = 0);
-	void LoadSlot(int slot, Callback callback, void *cbUserData = 0);
-	bool HasSaveInSlot(int slot);
-	int GetNewestSlot();
+	// Cycle through the 5 savestate slots
+	void NextSlot();
+	void SaveSlot(const std::string &gameFilename, int slot, Callback callback, void *cbUserData = 0);
+	void LoadSlot(const std::string &gameFilename, int slot, Callback callback, void *cbUserData = 0);
+	// Checks whether there's an existing save in the specified slot.
+	bool HasSaveInSlot(const std::string &gameFilename, int slot);
+	bool HasScreenshotInSlot(const std::string &gameFilename, int slot);
+
+	int GetCurrentSlot();
+
+	// Returns -1 if there's no newest slot.
+	int GetNewestSlot(const std::string &gameFilename);
+
+	std::string GetSlotDateAsString(const std::string &gameFilename, int slot);
+	std::string GenerateSaveSlotFilename(const std::string &gameFilename, int slot, const char *extension);
 
 	// Load the specified file into the current state (async.)
 	// Warning: callback will be called on a different thread.
-	void Load(const std::string &filename, Callback callback = 0, void *cbUserData = 0);
+	void Load(const std::string &filename, Callback callback = Callback(), void *cbUserData = 0);
 
 	// Save the current state to the specified file (async.)
 	// Warning: callback will be called on a different thread.
-	void Save(const std::string &filename, Callback callback = 0, void *cbUserData = 0);
+	void Save(const std::string &filename, Callback callback = Callback(), void *cbUserData = 0);
+
+	CChunkFileReader::Error SaveToRam(std::vector<u8> &state);
+	CChunkFileReader::Error LoadFromRam(std::vector<u8> &state);
 
 	// For testing / automated tests.  Runs a save state verification pass (async.)
 	// Warning: callback will be called on a different thread.
-	void Verify(Callback callback = 0, void *cbUserData = 0);
+	void Verify(Callback callback = Callback(), void *cbUserData = 0);
+
+	// To go back to a previous snapshot (only if enabled.)
+	// Warning: callback will be called on a different thread.
+	void Rewind(Callback callback = Callback(), void *cbUserData = 0);
+
+	// Returns true if there are rewind snapshots available.
+	bool CanRewind();
+
+	// Returns true if a savestate has been used during this session.
+	bool HasLoadedState();
+
+	// Check if there's any save stating needing to be done.  Normally called once per frame.
+	void Process();
 };

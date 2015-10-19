@@ -17,16 +17,25 @@
 
 #pragma once
 
-#include <map>
+#include <unordered_map>
 
-#include "IndexGenerator.h"
-#include "VertexDecoder.h"
+#include "GPU/GPUState.h"
+#include "GPU/Common/GPUDebugInterface.h"
+#include "GPU/Common/IndexGenerator.h"
+#include "GPU/Common/VertexDecoderCommon.h"
+#include "GPU/Common/DrawEngineCommon.h"
+#include "GPU/GLES/FragmentShaderGenerator.h"
+#include "gfx/gl_common.h"
 #include "gfx/gl_lost_manager.h"
 
 class LinkedShader;
 class ShaderManager;
 class TextureCache;
 class FramebufferManager;
+class FramebufferManagerCommon;
+class TextureCacheCommon;
+class FragmentTestCache;
+struct TransformedVertex;
 
 struct DecVtxFormat;
 
@@ -41,11 +50,16 @@ struct DecVtxFormat;
 // DRAWN_ONCE -> death
 // DRAWN_RELIABLE -> death
 
-
-// Don't bother storing information about draws smaller than this.
 enum {
-	VERTEX_CACHE_THRESHOLD = 20,
+	VAI_FLAG_VERTEXFULLALPHA = 1,
 };
+
+// Avoiding the full include of TextureDecoder.h.
+#if (defined(_M_SSE) && defined(_M_X64)) || defined(ARM64)
+typedef u64 ReliableHashType;
+#else
+typedef u32 ReliableHashType;
+#endif
 
 // Try to keep this POD.
 class VertexArrayInfo {
@@ -54,15 +68,16 @@ public:
 		status = VAI_NEW;
 		vbo = 0;
 		ebo = 0;
-		numDCs = 0;
-		prim = -1;
+		prim = GE_PRIM_INVALID;
 		numDraws = 0;
 		numFrames = 0;
-		lastFrame = gpuStats.numFrames;
+		lastFrame = gpuStats.numFlips;
 		numVerts = 0;
 		drawsUntilNextFullHash = 0;
+		flags = 0;
 	}
 	~VertexArrayInfo();
+
 	enum Status {
 		VAI_NEW,
 		VAI_HASHING,
@@ -70,39 +85,35 @@ public:
 		VAI_UNRELIABLE,  // never cache
 	};
 
-	u32 hash;
+	ReliableHashType hash;
+	u32 minihash;
 
 	Status status;
 
 	u32 vbo;
 	u32 ebo;
 
-	// TODO: see if we can avoid having this full thing here.
-	DecVtxFormat decFmt;
-	
-	// Precalculated parameter for drawdrawElements
+	// Precalculated parameter for drawRangeElements
 	u16 numVerts;
-	u8 prim;
+	u16 maxIndex;
+	s8 prim;
 
 	// ID information
-	u8 numDCs;
 	int numDraws;
 	int numFrames;
 	int lastFrame;  // So that we can forget.
 	u16 drawsUntilNextFullHash;
+	u8 flags;
 };
 
-
 // Handles transform, lighting and drawing.
-class TransformDrawEngine : public GfxResourceHolder {
+class TransformDrawEngine : public DrawEngineCommon, public GfxResourceHolder {
 public:
 	TransformDrawEngine();
 	virtual ~TransformDrawEngine();
-	void SubmitPrim(void *verts, void *inds, int prim, int vertexCount, u32 vertexType, int forceIndexType, int *bytesRead);
-	void DrawBezier(int ucount, int vcount);
-	void DrawSpline(int ucount, int vcount, int utype, int vtype);
-	void DecodeVerts();
-	void Flush();
+
+	void SubmitPrim(void *verts, void *inds, GEPrimitiveType prim, int vertexCount, u32 vertType, int *bytesRead);
+
 	void SetShaderManager(ShaderManager *shaderManager) {
 		shaderManager_ = shaderManager;
 	}
@@ -112,28 +123,86 @@ public:
 	void SetFramebufferManager(FramebufferManager *fbManager) {
 		framebufferManager_ = fbManager;
 	}
+	void SetFragmentTestCache(FragmentTestCache *testCache) {
+		fragmentTestCache_ = testCache;
+	}
 	void InitDeviceObjects();
 	void DestroyDeviceObjects();
-	void GLLost();
+	void GLLost() override;
+	void Resized();
 
 	void DecimateTrackedVertexArrays();
 	void ClearTrackedVertexArrays();
 
 	void SetupVertexDecoder(u32 vertType);
+	inline void SetupVertexDecoderInternal(u32 vertType);
 
 	// This requires a SetupVertexDecoder call first.
-	int EstimatePerVertexCost();
+	int EstimatePerVertexCost() {
+		// TODO: This is transform cost, also account for rasterization cost somehow... although it probably
+		// runs in parallel with transform.
+
+		// Also, this is all pure guesswork. If we can find a way to do measurements, that would be great.
+
+		// GTA wants a low value to run smooth, GoW wants a high value (otherwise it thinks things
+		// went too fast and starts doing all the work over again).
+
+		int cost = 20;
+		if (gstate.isLightingEnabled()) {
+			cost += 10;
+
+			for (int i = 0; i < 4; i++) {
+				if (gstate.isLightChanEnabled(i))
+					cost += 10;
+			}
+		}
+
+		if (gstate.getUVGenMode() != GE_TEXMAP_TEXTURE_COORDS) {
+			cost += 20;
+		}
+		if (dec_ && dec_->morphcount > 1) {
+			cost += 5 * dec_->morphcount;
+		}
+
+		return cost;
+	}
+
+	// So that this can be inlined
+	void Flush() {
+		if (!numDrawCalls)
+			return;
+		DoFlush();
+	}
+
+	void FinishDeferred() {
+		if (!numDrawCalls)
+			return;
+		DecodeVerts();
+	}
+
+	bool IsCodePtrVertexDecoder(const u8 *ptr) const;
+
+	void DispatchFlush() override { Flush(); }
+	void DispatchSubmitPrim(void *verts, void *inds, GEPrimitiveType prim, int vertexCount, u32 vertType, int *bytesRead) override {
+		SubmitPrim(verts, inds, prim, vertexCount, vertType, bytesRead);
+	}
 
 private:
-	void SoftwareTransformAndDraw(int prim, u8 *decoded, LinkedShader *program, int vertexCount, u32 vertexType, void *inds, int indexType, const DecVtxFormat &decVtxFormat, int maxIndex);
+	void DecodeVerts();
+	void DecodeVertsStep();
+	void DoFlush();
 	void ApplyDrawState(int prim);
-	bool IsReallyAClear(int numVerts) const;
+	void ApplyDrawStateLate();
+	void ApplyBlendState();
+	void ApplyStencilReplaceAndLogicOp(ReplaceAlphaType replaceAlphaWithStencil);
+	bool ApplyShaderBlending();
+	inline void ResetShaderBlending();
+	GLuint AllocateBuffer();
+	void FreeBuffer(GLuint buf);
 
-	// drawcall ID
-	u32 ComputeFastDCID();
-	u32 ComputeHash();  // Reads deferred vertex data.
-
-	VertexDecoder *GetVertexDecoder(u32 vtype);
+	u32 ComputeMiniHash();
+	ReliableHashType ComputeHash();  // Reads deferred vertex data.
+	void MarkUnreliable(VertexArrayInfo *vai);
 
 	// Defer all vertex decoding to a Flush, so that we can hash and cache the
 	// generated buffers without having to redecode them every time.
@@ -142,82 +211,45 @@ private:
 		void *inds;
 		u32 vertType;
 		u8 indexType;
-		u8 prim;
-		u16 vertexCount;
+		s8 prim;
+		u32 vertexCount;
 		u16 indexLowerBound;
 		u16 indexUpperBound;
 	};
 
 	// Vertex collector state
 	IndexGenerator indexGen;
-	int collectedVerts;
-	int prevPrim_;
+	int decodedVerts_;
+	GEPrimitiveType prevPrim_;
 
-	// Cached vertex decoders
-	std::map<u32, VertexDecoder *> decoderMap_;
-	VertexDecoder *dec_;
 	u32 lastVType_;
-	
-	// Vertex collector buffers
-	u8 *decoded;
-	u16 *decIndex;
 
 	TransformedVertex *transformed;
 	TransformedVertex *transformedExpanded;
 
-	std::map<u32, VertexArrayInfo *> vai_;
+	std::unordered_map<u32, VertexArrayInfo *> vai_;
 
 	// Vertex buffer objects
 	// Element buffer objects
-	enum { NUM_VBOS = 128 };
-	GLuint vbo_[NUM_VBOS];
-	GLuint ebo_[NUM_VBOS];
-	int curVbo_;
+	std::vector<GLuint> bufferNameCache_;
 
 	// Other
 	ShaderManager *shaderManager_;
 	TextureCache *textureCache_;
 	FramebufferManager *framebufferManager_;
+	FragmentTestCache *fragmentTestCache_;
 
 	enum { MAX_DEFERRED_DRAW_CALLS = 128 };
 	DeferredDrawCall drawCalls[MAX_DEFERRED_DRAW_CALLS];
 	int numDrawCalls;
-};
+	int vertexCountInDrawCalls;
 
-// Only used by SW transform
-struct Color4 {
-	float r, g, b, a;
+	int decimationCounter_;
+	int decodeCounter_;
+	u32 dcid_;
 
-	Color4() : r(0), g(0), b(0), a(0) { }
-	Color4(float _r, float _g, float _b, float _a=1.0f)
-		: r(_r), g(_g), b(_b), a(_a) {
-	}
-	Color4(const float in[4]) {r=in[0];g=in[1];b=in[2];a=in[3];}
-	Color4(const float in[3], float alpha) {r=in[0];g=in[1];b=in[2];a=alpha;}
+	UVScale *uvScale;
 
-	const float &operator [](int i) const {return *(&r + i);}
-
-	Color4 operator *(float f) const {
-		return Color4(f*r,f*g,f*b,f*a);
-	}
-	Color4 operator *(const Color4 &c) const {
-		return Color4(r*c.r,g*c.g,b*c.b,a*c.a);
-	}
-	Color4 operator +(const Color4 &c) const {
-		return Color4(r+c.r,g+c.g,b+c.b,a+c.a);
-	}
-	void operator +=(const Color4 &c) {
-		r+=c.r;
-		g+=c.g;
-		b+=c.b;
-		a+=c.a;
-	}
-	void GetFromRGB(u32 col) {
-		b = ((col>>16) & 0xff)/255.0f;
-		g = ((col>>8) & 0xff)/255.0f;
-		r = ((col>>0) & 0xff)/255.0f;
-	}
-	void GetFromA(u32 col) {
-		a = (col&0xff)/255.0f;
-	}
+	bool fboTexNeedBind_;
+	bool fboTexBound_;
 };

@@ -15,8 +15,10 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
-#ifndef _CORETIMING_H
-#define _CORETIMING_H
+#pragma once
+
+#include <string>
+#include "Common/CommonTypes.h"
 
 // This is a system to schedule events into the emulated machine's future. Time is measured
 // in main CPU clock cycles.
@@ -30,8 +32,6 @@
 // So to schedule a new event on a regular basis:
 // inside callback:
 //   ScheduleEvent(periodInCycles - cyclesLate, callback, "whatever")
-
-#include "../Globals.h"
 
 class PointerWrap;
 
@@ -75,10 +75,13 @@ namespace CoreTiming
 	void Init();
 	void Shutdown();
 
+	typedef void (*MHzChangeCallback)();
 	typedef void (*TimedCallback)(u64 userdata, int cyclesLate);
 
 	u64 GetTicks();
 	u64 GetIdleTicks();
+	u64 GetGlobalTimeUs();
+	u64 GetGlobalTimeUsScaled();
 
 	// Returns the event_type identifier.
 	int RegisterEvent(const char *name, TimedCallback callback);
@@ -99,9 +102,9 @@ namespace CoreTiming
 	void RemoveAllEvents(int event_type);
 	bool IsScheduled(int event_type);
 	void Advance();
-	void AdvanceQuick();
 	void MoveEvents();
 	void ProcessFifoWaitEvents();
+	void ForceCheck();
 
 	// Pretend that the main CPU has executed enough cycles to reach the next event.
 	void Idle(int maxIdle = 0);
@@ -113,6 +116,7 @@ namespace CoreTiming
 
 	// Warning: not included in save states.
 	void RegisterAdvanceCallback(void (*callback)(int cyclesExecuted));
+	void RegisterMHzChangeCallback(MHzChangeCallback callback);
 
 	std::string GetScheduledEventsSummary();
 
@@ -123,5 +127,3 @@ namespace CoreTiming
 	extern int slicelength;
 
 }; // end of namespace
-
-#endif

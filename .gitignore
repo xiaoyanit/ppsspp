@@ -17,10 +17,21 @@
 *.suo
 *.aps
 *.exp
+*.qdact
+controls.ini
 Debug
 Release
 Windows/x64
 Windows/ipch
+Windows/bin-release
+Windows/win-version.h
+ui_atlas.zim.png
+ui_atlas_high.zim.png
+android/assets
+ext/_Output
+android/lint.xml
+PPSSPPWindows64.exe.manifest
+PPSSPPWindows.exe.manifest
 
 # For Mac
 .DS_Store
@@ -50,7 +61,7 @@ __testerror.txt
 __testfinish.txt
 __testfailure.bmp
 GameLogNotes.txt
-
+screenshots
 android/ui_atlas.zim
 android/assets/lang
 android/assets/flash0
@@ -60,3 +71,15 @@ local.properties
 # For vim
 *.swp
 tags
+
+# Other VCS
+.bzr/
+.bzrignore
+
+# Debian build
+debian/files
+debian/ppsspp.substvars
+debian/ppsspp/
+
+# YouCompleteMe file
+.ycm_extra_conf.pyc

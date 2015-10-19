@@ -1,4 +1,3 @@
-QT += opengl
 QT -= gui
 TARGET = Common
 TEMPLATE = lib
@@ -6,65 +5,71 @@ CONFIG += staticlib
 
 include(Settings.pri)
 
+# CPU
 arm {
-	SOURCES += ../Common/ArmCPUDetect.cpp \
-		../Common/ArmEmitter.cpp \
-		../Common/ArmThunk.cpp
-	HEADERS += ../Common/ArmEmitter.h
+	SOURCES += $$P/Common/ArmCPUDetect.cpp \
+		$$P/Common/ArmThunk.cpp
 }
-x86 {
-	SOURCES += ../Common/ABI.cpp \
-		../Common/CPUDetect.cpp \
-		../Common/Thunk.cpp \
-		../Common/x64Analyzer.cpp \
-		../Common/x64Emitter.cpp
-	HEADERS +=  ../Common/ABI.h \
-		../Common/CPUDetect.h \
-		../Common/Thunk.h \
-		../Common/x64Analyzer.h \
-		../Common/x64Emitter.h
+else:i86 {
+	SOURCES += $$P/Common/ABI.cpp \
+		$$P/Common/CPUDetect.cpp \
+		$$P/Common/Thunk.cpp \
+		$$P/Common/x64Analyzer.cpp \
+		$$P/Common/x64Emitter.cpp
+	HEADERS += $$P/Common/ABI.h \
+		$$P/Common/Thunk.h \
+		$$P/Common/x64Analyzer.h \
+		$$P/Common/x64Emitter.h
 }
+else:mips: {
+	SOURCES += $$P/Common/MipsCPUDetect.cpp
+}
+else {
+	SOURCES += $$P/Common/FakeCPUDetect.cpp
+}
+SOURCES += $$P/Common/ArmEmitter.cpp \
+	$$P/Common/MipsEmitter.cpp
+HEADERS += $$P/Common/ArmEmitter.h \
+	$$P/Common/MipsEmitter.h \
+	$$P/Common/CPUDetect.h
+
 win32 {
-	SOURCES += ../Common/stdafx.cpp
-	HEADERS += ../Common/stdafx.h
+	SOURCES += $$P/Common/stdafx.cpp
+	HEADERS += $$P/Common/stdafx.h
 }
 
-SOURCES += ../Common/ColorUtil.cpp \
-	../Common/ConsoleListener.cpp \
-	../Common/ExtendedTrace.cpp \
-	../Common/FPURoundModeGeneric.cpp \
-	../Common/FileSearch.cpp \
-	../Common/FileUtil.cpp \
-	../Common/Hash.cpp \
-	../Common/LogManager.cpp \
-	../Common/MathUtil.cpp \
-	../Common/MemArena.cpp \
-	../Common/MemoryUtil.cpp \
-	../Common/Misc.cpp \
-	../Common/MsgHandler.cpp \
-	../Common/StringUtils.cpp \
-	../Common/Thread.cpp \
-	../Common/ThreadPools.cpp \
-	../Common/Timer.cpp \
-	../Common/Version.cpp \
-	../Common/Crypto/*.cpp
-HEADERS += ../Common/ChunkFile.h \
-	../Common/ColorUtil.h \
-	../Common/ConsoleListener.h \
-	../Common/ExtendedTrace.h \
-	../Common/FileSearch.h \
-	../Common/FileUtil.h \
-	../Common/Hash.h \
-	../Common/LogManager.h \
-	../Common/MathUtil.h \
-	../Common/MemArena.h \
-	../Common/MemoryUtil.h \
-	../Common/MsgHandler.h \
-	../Common/StringUtils.h \
-	../Common/Thread.h \
-	../Common/ThreadPools.h \
-	../Common/Timer.h \
-	../Common/Crypto/*.h
+!symbian {
+	SOURCES += $$P/Common/MemArena.cpp
+	HEADERS += $$P/Common/MemArena.h
+}
 
-INCLUDEPATH += ../native
+armv7: SOURCES += $$P/Common/ColorConvNEON.cpp
+
+SOURCES += $$P/Common/ChunkFile.cpp \
+	$$P/Common/ColorConv.cpp \
+	$$P/Common/ConsoleListener.cpp \
+	$$P/Common/FileUtil.cpp \
+	$$P/Common/LogManager.cpp \
+	$$P/Common/KeyMap.cpp \
+	$$P/Common/MemoryUtil.cpp \
+	$$P/Common/Misc.cpp \
+	$$P/Common/MsgHandler.cpp \
+	$$P/Common/StringUtils.cpp \
+	$$P/Common/ThreadPools.cpp \
+	$$P/Common/Timer.cpp \
+	$$P/Common/Crypto/*.cpp
+HEADERS += $$P/Common/ChunkFile.h \
+	$$P/Common/ConsoleListener.h \
+	$$P/Common/FileUtil.h \
+	$$P/Common/LogManager.h \
+	$$P/Common/KeyMap.h \
+	$$P/Common/MemoryUtil.h \
+	$$P/Common/MsgHandler.h \
+	$$P/Common/StringUtils.h \
+	$$P/Common/ThreadPools.h \
+	$$P/Common/ThreadSafeList.h \
+	$$P/Common/Timer.h \
+	$$P/Common/Crypto/*.h
+
+INCLUDEPATH += $$P/ext/native
 

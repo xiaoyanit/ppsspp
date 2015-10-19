@@ -18,35 +18,111 @@
 #pragma once
 
 #include "base/basictypes.h"
-#include "../../Globals.h"
+#include "Globals.h"
 #include <map>
-#include "VertexShaderGenerator.h"
-#include "FragmentShaderGenerator.h"
+
+#include "GPU/Common/ShaderCommon.h"
+#include "GPU/GLES/VertexShaderGenerator.h"
+#include "GPU/GLES/FragmentShaderGenerator.h"
 
 class Shader;
 
-class LinkedShader
-{
+struct ShaderID {
+	ShaderID() {
+		clear();
+	}
+	void clear() {
+		for (size_t i = 0; i < ARRAY_SIZE(d); i++) {
+			d[i] = 0;
+		}
+	}
+	void set_invalid() {
+		for (size_t i = 0; i < ARRAY_SIZE(d); i++) {
+			d[i] = 0xFFFFFFFF;
+		}
+	}
+
+	u32 d[2];
+	bool operator < (const ShaderID &other) const {
+		for (size_t i = 0; i < sizeof(d) / sizeof(u32); i++) {
+			if (d[i] < other.d[i])
+				return true;
+			if (d[i] > other.d[i])
+				return false;
+		}
+		return false;
+	}
+	bool operator == (const ShaderID &other) const {
+		for (size_t i = 0; i < sizeof(d) / sizeof(u32); i++) {
+			if (d[i] != other.d[i])
+				return false;
+		}
+		return true;
+	}
+
+	bool Bit(int bit) const {
+		return (d[bit >> 5] >> (bit & 31)) & 1;
+	}
+	// Does not handle crossing 32-bit boundaries
+	int Bits(int bit, int count) const {
+		const int mask = (1 << count) - 1;
+		return (d[bit >> 5] >> (bit & 31)) & mask;
+	}
+	void SetBit(int bit, bool value = true) {
+		if (value) {
+			d[bit >> 5] |= 1 << (bit & 31);
+		}
+	}
+	void SetBits(int bit, int count, int value) {
+		if (value != 0) {
+			const int mask = (1 << count) - 1;
+			d[bit >> 5] |= (value & mask) << (bit & 31);
+		}
+	}
+
+	void ToString(std::string *dest) const {
+		dest->resize(sizeof(d));
+		memcpy(&(*dest)[0], d, sizeof(d));
+	}
+	void FromString(std::string src) {
+		memcpy(d, &(src)[0], sizeof(d));
+	}
+};
+
+// Pre-fetched attrs and uniforms
+enum {
+	ATTR_POSITION = 0,
+	ATTR_TEXCOORD = 1,
+	ATTR_NORMAL = 2,
+	ATTR_W1 = 3,
+	ATTR_W2 = 4,
+	ATTR_COLOR0 = 5,
+	ATTR_COLOR1 = 6,
+
+	ATTR_COUNT,
+};
+
+class LinkedShader {
 public:
-	LinkedShader(Shader *vs, Shader *fs);
+	LinkedShader(Shader *vs, Shader *fs, u32 vertType, bool useHWTransform, LinkedShader *previous);
 	~LinkedShader();
 
-	void use();
+	void use(u32 vertType, LinkedShader *previous);
 	void stop();
-	void updateUniforms();
+	void UpdateUniforms(u32 vertType);
+
+	Shader *vs_;
+	// Set to false if the VS failed, happens on Mali-400 a lot for complex shaders.
+	bool useHWTransform_;
 
 	uint32_t program;
+	u32 availableUniforms;
 	u32 dirtyUniforms;
 
-	// Pre-fetched attrs and uniforms
-	int a_position;
-	int a_color0;
-	int a_color1;
-	int a_texcoord;
-	int a_normal;
-	int a_weight0123;
-	int a_weight4567;
+	// Present attributes in the shader.
+	int attrMask;  // 1 << ATTR_ ... or-ed together.
 
+	int u_stencilReplaceValue;
 	int u_tex;
 	int u_proj;
 	int u_proj_through;
@@ -54,21 +130,32 @@ public:
 	int u_view;
 	int u_texmtx;
 	int u_world;
+	int u_depthRange;   // x,y = viewport xscale/xcenter. z,w=clipping minz/maxz (?)
+
 #ifdef USE_BONE_ARRAY
 	int u_bone;  // array, size is numBones
 #else
 	int u_bone[8];
 #endif
 	int numBones;
-	
+
+	// Shader blending.
+	int u_fbotex;
+	int u_blendFixA;
+	int u_blendFixB;
+	int u_fbotexSize;
+
 	// Fragment processing inputs
 	int u_alphacolorref;
-	int u_colormask;
+	int u_alphacolormask;
+	int u_testtex;
 	int u_fogcolor;
 	int u_fogcoef;
 
 	// Texturing
 	int u_uvscaleoffset;
+	int u_texclamp;
+	int u_texclampoff;
 
 	// Lighting
 	int u_ambient;
@@ -86,17 +173,18 @@ public:
 	int u_lightambient[4];  // attenuation
 };
 
-// Will reach 32 bits soon :P
-enum
-{
+enum {
 	DIRTY_PROJMATRIX = (1 << 0),
 	DIRTY_PROJTHROUGHMATRIX = (1 << 1),
-	DIRTY_FOGCOLOR	 = (1 << 2),
-	DIRTY_FOGCOEF    = (1 << 3),
-	DIRTY_TEXENV		 = (1 << 4),
-	DIRTY_ALPHACOLORREF	 = (1 << 5),
-	DIRTY_COLORREF	 = (1 << 6),
-	DIRTY_COLORMASK	 = (1 << 7),
+	DIRTY_FOGCOLOR = (1 << 2),
+	DIRTY_FOGCOEF = (1 << 3),
+	DIRTY_TEXENV = (1 << 4),
+	DIRTY_ALPHACOLORREF = (1 << 5),
+
+	// 1 << 6 is free! Wait, not anymore...
+	DIRTY_STENCILREPLACEVALUE = (1 << 6),
+
+	DIRTY_ALPHACOLORMASK = (1 << 7),
 	DIRTY_LIGHT0 = (1 << 8),
 	DIRTY_LIGHT1 = (1 << 9),
 	DIRTY_LIGHT2 = (1 << 10),
@@ -107,8 +195,14 @@ enum
 	DIRTY_MATEMISSIVE = (1 << 14),
 	DIRTY_AMBIENT = (1 << 15),
 	DIRTY_MATAMBIENTALPHA = (1 << 16),
-	DIRTY_MATERIAL = (1 << 17),  // let's set all 4 together (emissive ambient diffuse specular). We hide specular coef in specular.a
+
+	DIRTY_SHADERBLEND = (1 << 17),  // Used only for in-shader blending.
+
 	DIRTY_UVSCALEOFFSET = (1 << 18),  // this will be dirtied ALL THE TIME... maybe we'll need to do "last value with this shader compares"
+
+	// Texclamp is fairly rare so let's share it's bit with DIRTY_DEPTHRANGE.
+	DIRTY_TEXCLAMP = (1 << 19),
+	DIRTY_DEPTHRANGE = (1 << 19),
 
 	DIRTY_WORLDMATRIX = (1 << 21),
 	DIRTY_VIEWMATRIX = (1 << 22),  // Maybe we'll fold this into projmatrix eventually
@@ -129,48 +223,78 @@ enum
 
 class Shader {
 public:
-	Shader(const char *code, uint32_t shaderType);
+	Shader(const char *code, uint32_t glShaderType, bool useHWTransform, const ShaderID &shaderID);
+	~Shader();
 	uint32_t shader;
-	const std::string &source() const { return source_; }
+
+	bool Failed() const { return failed_; }
+	bool UseHWTransform() const { return useHWTransform_; }
+	const ShaderID &ID() const { return id_; }
+
+	std::string GetShaderString(DebugShaderStringType type) const;
 
 private:
 	std::string source_;
+	ShaderID id_;
+	bool failed_;
+	bool useHWTransform_;
+	bool isFragment_;
 };
 
-
-class ShaderManager
-{
+class ShaderManager {
 public:
 	ShaderManager();
 	~ShaderManager();
 
 	void ClearCache(bool deleteThem);  // TODO: deleteThem currently not respected
-	LinkedShader *ApplyShader(int prim);
-	void DirtyShader();
-	void DirtyUniform(u32 what);
-	void EndFrame();  // disables vertex arrays
 
-	int NumVertexShaders() const { return (int)vsCache.size(); }
-	int NumFragmentShaders() const { return (int)fsCache.size(); }
-	int NumPrograms() const { return (int)linkedShaderCache.size(); }
+	// This is the old ApplyShader split into two parts, because of annoying information dependencies.
+	// If you call ApplyVertexShader, you MUST call ApplyFragmentShader soon afterwards.
+	Shader *ApplyVertexShader(int prim, u32 vertType);
+	LinkedShader *ApplyFragmentShader(Shader *vs, int prim, u32 vertType);
+
+	void DirtyShader();
+	void DirtyUniform(u32 what) {
+		globalDirty_ |= what;
+	}
+	void DirtyLastShader();  // disables vertex arrays
+
+	int NumVertexShaders() const { return (int)vsCache_.size(); }
+	int NumFragmentShaders() const { return (int)fsCache_.size(); }
+	int NumPrograms() const { return (int)linkedShaderCache_.size(); }
+
+	std::vector<std::string> DebugGetShaderIDs(DebugShaderType type);
+	std::string DebugGetShaderString(std::string id, DebugShaderType type, DebugShaderStringType stringType);
 
 private:
 	void Clear();
+	static bool DebugAreShadersCompatibleForLinking(Shader *vs, Shader *fs);
 
-	typedef std::map<std::pair<Shader *, Shader *>, LinkedShader *> LinkedShaderCache;
+	struct LinkedShaderCacheEntry {
+		LinkedShaderCacheEntry(Shader *vs_, Shader *fs_, LinkedShader *ls_)
+			: vs(vs_), fs(fs_), ls(ls_) { }
 
-	LinkedShaderCache linkedShaderCache;
-	FragmentShaderID lastFSID;
-	VertexShaderID lastVSID;
+		Shader *vs;
+		Shader *fs;
+		LinkedShader *ls;
+	};
+	typedef std::vector<LinkedShaderCacheEntry> LinkedShaderCache;
 
-	LinkedShader *lastShader;
-	u32 globalDirty;
-	u32 shaderSwitchDirty;
+	LinkedShaderCache linkedShaderCache_;
+
+	bool lastVShaderSame_;
+
+	ShaderID lastFSID_;
+	ShaderID lastVSID_;
+
+	LinkedShader *lastShader_;
+	u32 globalDirty_;
+	u32 shaderSwitchDirty_;
 	char *codeBuffer_;
 
-	typedef std::map<FragmentShaderID, Shader *> FSCache;
-	FSCache fsCache;
+	typedef std::map<ShaderID, Shader *> FSCache;
+	FSCache fsCache_;
 
-	typedef std::map<VertexShaderID, Shader *> VSCache;
-	VSCache vsCache;
+	typedef std::map<ShaderID, Shader *> VSCache;
+	VSCache vsCache_;
 };

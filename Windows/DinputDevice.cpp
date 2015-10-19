@@ -16,35 +16,49 @@
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
 #include <limits.h>
+#include <algorithm>
+
 #include "Core/HLE/sceCtrl.h"
 #include "DinputDevice.h"
-#include "ControlMapping.h"
 #include "Core/Config.h"
 #include "input/input_state.h"
+#include "base/NativeApp.h"
+#include "input/keycodes.h"
 #include "Core/Reporting.h"
 #include "Xinput.h"
 #pragma comment(lib,"dinput8.lib")
 
-unsigned int dinput_ctrl_map[] = {
-	11,     PAD_BUTTON_MENU,         // Open PauseScreen
-	10,     PAD_BUTTON_BACK,         // Toggle PauseScreen & Back Setting Page
-	1,		PAD_BUTTON_A,            // Cross    = XBOX-A
-	2,		PAD_BUTTON_B,            // Circle   = XBOX-B 
-	0,		PAD_BUTTON_X,            // Square   = XBOX-X
-	3,		PAD_BUTTON_Y,            // Triangle = XBOX-Y
-	8,		PAD_BUTTON_SELECT,
-	9,		PAD_BUTTON_START,
-	4,		PAD_BUTTON_LBUMPER,      // LTrigger = XBOX-LBumper
-	5,		PAD_BUTTON_RBUMPER,      // RTrigger = XBOX-RBumper
-	6,      PAD_BUTTON_LEFT_THUMB,   // Turbo
-	7,      PAD_BUTTON_RIGHT_THUMB,  // Open PauseScreen
-	POV_CODE_UP, PAD_BUTTON_UP,
-	POV_CODE_DOWN, PAD_BUTTON_DOWN,
-	POV_CODE_LEFT, PAD_BUTTON_LEFT,
-	POV_CODE_RIGHT, PAD_BUTTON_RIGHT,
+#ifdef min
+#undef min
+#undef max
+#endif
+
+//initialize static members of DinputDevice
+unsigned int                  DinputDevice::pInstances = 0;
+LPDIRECTINPUT8                DinputDevice::pDI = NULL;
+std::vector<DIDEVICEINSTANCE> DinputDevice::devices;
+
+// In order from 0.  There can be 128, but most controllers do not have that many.
+static const int dinput_buttons[] = {
+	NKCODE_BUTTON_1,
+	NKCODE_BUTTON_2,
+	NKCODE_BUTTON_3,
+	NKCODE_BUTTON_4,
+	NKCODE_BUTTON_5,
+	NKCODE_BUTTON_6,
+	NKCODE_BUTTON_7,
+	NKCODE_BUTTON_8,
+	NKCODE_BUTTON_9,
+	NKCODE_BUTTON_10,
+	NKCODE_BUTTON_11,
+	NKCODE_BUTTON_12,
+	NKCODE_BUTTON_13,
+	NKCODE_BUTTON_14,
+	NKCODE_BUTTON_15,
+	NKCODE_BUTTON_16,
 };
 
-const unsigned int dinput_ctrl_map_size = sizeof(dinput_ctrl_map);
+static float NormalizedDeadzoneFilter(short value);
 
 #define DIFF  (JOY_POVRIGHT - JOY_POVFORWARD) / 2
 #define JOY_POVFORWARD_RIGHT	JOY_POVFORWARD + DIFF
@@ -52,15 +66,13 @@ const unsigned int dinput_ctrl_map_size = sizeof(dinput_ctrl_map);
 #define JOY_POVBACKWARD_LEFT	JOY_POVBACKWARD + DIFF
 #define JOY_POVLEFT_FORWARD		JOY_POVLEFT + DIFF
 
-struct XINPUT_DEVICE_NODE
-{
+struct XINPUT_DEVICE_NODE {
     DWORD dwVidPid;
     XINPUT_DEVICE_NODE* pNext;
 };
 XINPUT_DEVICE_NODE*     g_pXInputDeviceList = NULL;
 
-bool IsXInputDevice( const GUID* pGuidProductFromDirectInput )
-{
+bool IsXInputDevice( const GUID* pGuidProductFromDirectInput ) {
     XINPUT_DEVICE_NODE* pNode = g_pXInputDeviceList;
     while( pNode )
     {
@@ -72,37 +84,79 @@ bool IsXInputDevice( const GUID* pGuidProductFromDirectInput )
     return false;
 }
 
-DinputDevice::DinputDevice()
+LPDIRECTINPUT8 DinputDevice::getPDI()
 {
+	if (pDI == NULL)
+	{
+		if (FAILED(DirectInput8Create(GetModuleHandle(NULL), DIRECTINPUT_VERSION, IID_IDirectInput8, (void**)&pDI, NULL)))
+		{
+			pDI = NULL;
+		}
+	}
+	return pDI;
+}
+
+BOOL CALLBACK DinputDevice::DevicesCallback(
+	LPCDIDEVICEINSTANCE lpddi,
+	LPVOID pvRef
+	)
+{
+	//check if a device with the same Instance guid is already saved
+	auto res = std::find_if(devices.begin(), devices.end(), 
+		[lpddi](const DIDEVICEINSTANCE &to_consider){
+			return lpddi->guidInstance == to_consider.guidInstance;
+		});
+	if (res == devices.end()) //not yet in the devices list
+	{
+		// Ignore if device supports XInput
+		if (!IsXInputDevice(&lpddi->guidProduct)) {
+			devices.push_back(*lpddi);
+		}
+	}
+	return DIENUM_CONTINUE;
+}
+
+void DinputDevice::getDevices()
+{
+	if (devices.empty())
+	{
+		getPDI()->EnumDevices(DI8DEVCLASS_GAMECTRL, &DinputDevice::DevicesCallback, NULL, DIEDFL_ATTACHEDONLY);
+	}
+}
+
+DinputDevice::DinputDevice(int devnum) {
+	pInstances++;
+	pDevNum = devnum;
 	pJoystick = NULL;
-	pDI = NULL;
+	memset(lastButtons_, 0, sizeof(lastButtons_));
+	memset(lastPOV_, 0, sizeof(lastPOV_));
+	last_lX_ = 0;
+	last_lY_ = 0;
+	last_lZ_ = 0;
+	last_lRx_ = 0;
+	last_lRy_ = 0;
+	last_lRz_ = 0;
 
-	if(FAILED(DirectInput8Create(GetModuleHandle(NULL),DIRECTINPUT_VERSION,IID_IDirectInput8,(void**)&pDI,NULL)))
-		return;
-
-	if(FAILED(pDI->CreateDevice(GUID_Joystick, &pJoystick, NULL )))
+	if (getPDI() == NULL)
 	{
-		pDI->Release();
-		pDI = NULL;
-		return;
-	}
-
-	if(FAILED(pJoystick->SetDataFormat(&c_dfDIJoystick2)))
-	{
-		pJoystick->Release();
-		pJoystick = NULL;
 		return;
 	}
 
-	// ignore if device suppert XInput
-	DIDEVICEINSTANCE dinfo = {0};
-	pJoystick->GetDeviceInfo(&dinfo);
-	if (IsXInputDevice(&dinfo.guidProduct))
+	if (devnum >= MAX_NUM_PADS)
 	{
-		pDI->Release();
-		pDI = NULL;
+		return;
+	}
+
+	getDevices();
+	if ( (devnum >= (int)devices.size()) || FAILED(getPDI()->CreateDevice(devices.at(devnum).guidInstance, &pJoystick, NULL)))
+	{
+		return;
+	}
+
+	if (FAILED(pJoystick->SetDataFormat(&c_dfDIJoystick2))) {
 		pJoystick->Release();
 		pJoystick = NULL;
+		return;
 	}
 
 	DIPROPRANGE diprg; 
@@ -113,120 +167,208 @@ DinputDevice::DinputDevice()
 	diprg.lMin              = -10000; 
 	diprg.lMax              = 10000;
 
-	analog = FAILED(pJoystick->SetProperty(DIPROP_RANGE, &diprg.diph))?false:true;
+	analog = FAILED(pJoystick->SetProperty(DIPROP_RANGE, &diprg.diph)) ? false : true;
 
-	// Other devices suffer If do not set the dead zone. 
-	// TODO: the dead zone will make configurable in the Control dialog.
+	// Other devices suffer if the deadzone is not set. 
+	// TODO: The dead zone will be made configurable in the Control dialog.
 	DIPROPDWORD dipw;
 	dipw.diph.dwSize       = sizeof(DIPROPDWORD);
 	dipw.diph.dwHeaderSize = sizeof(DIPROPHEADER);
 	dipw.diph.dwHow        = DIPH_DEVICE;
 	dipw.diph.dwObj        = 0;
-	// dwData 1000 is deadzone(0% - 10%)
-	dipw.dwData            = 1000;
+	// dwData 10000 is deadzone(0% - 100%), multiply by config scalar
+	dipw.dwData            = (int)(g_Config.fDInputAnalogDeadzone * 10000);
 
-	analog |= FAILED(pJoystick->SetProperty(DIPROP_DEADZONE, &dipw.diph))?false:true;
-
+	analog |= FAILED(pJoystick->SetProperty(DIPROP_DEADZONE, &dipw.diph)) ? false : true;
 }
 
-DinputDevice::~DinputDevice()
-{
-	if (pJoystick)
-	{
+DinputDevice::~DinputDevice() {
+	if (pJoystick) {
 		pJoystick->Release();
-		pJoystick= NULL;
+		pJoystick = NULL;
 	}
 
-	if (pDI)
-	{
+	pInstances--;
+
+	//the whole instance counter is obviously highly thread-unsafe
+	//but I don't think creation and destruction operations will be
+	//happening at the same time and other values like pDI are
+	//unsafe as well anyway
+	if (pInstances == 0 && pDI) {
 		pDI->Release();
-		pDI= NULL;
+		pDI = NULL;
 	}
 }
 
-static inline int getPadCodeFromVirtualPovCode(unsigned int povCode)
-{
-	int mergedCode = 0;
-	for (int i = 0; i < dinput_ctrl_map_size / sizeof(dinput_ctrl_map[0]); i += 2) {
-		if (dinput_ctrl_map[i] != 0xFFFFFFFF && dinput_ctrl_map[i] > 0xFF && dinput_ctrl_map[i] & povCode)
-			mergedCode |= dinput_ctrl_map[i + 1];
-	}
-	return mergedCode;
+void SendNativeAxis(int deviceId, short value, short &lastValue, int axisId) {
+	if (value == lastValue)
+		return;
+
+	AxisInput axis;
+	axis.deviceId = deviceId;
+	axis.axisId = axisId;
+	axis.value = (float)value / 10000.0f; // Convert axis to normalised float
+	NativeAxis(axis);
+
+	lastValue = value;
 }
 
-int DinputDevice::UpdateState(InputState &input_state)
-{
-	if (g_Config.iForceInputDevice == 0) return -1;
+inline float Signs(short val) {
+	return (0 < val) - (val < 0);
+}
+
+inline float LinearMaps(short val, short a0, short a1, short b0, short b1) {
+	return b0 + (((val - a0) * (b1 - b0)) / (a1 - a0));
+}
+
+int DinputDevice::UpdateState(InputState &input_state) {
 	if (!pJoystick) return -1;
 
 	DIJOYSTATE2 js;
 
-	if (FAILED(pJoystick->Poll()))
-	{
+	if (FAILED(pJoystick->Poll())) {
 		if(pJoystick->Acquire() == DIERR_INPUTLOST)
 			return -1;
 	}
 
 	if(FAILED(pJoystick->GetDeviceState(sizeof(DIJOYSTATE2), &js)))
-    return -1;
-	switch (js.rgdwPOV[0])
-	{
-		case JOY_POVFORWARD:		input_state.pad_buttons |= getPadCodeFromVirtualPovCode(POV_CODE_UP); break;
-		case JOY_POVBACKWARD:		input_state.pad_buttons |= getPadCodeFromVirtualPovCode(POV_CODE_DOWN); break;
-		case JOY_POVLEFT:			input_state.pad_buttons |= getPadCodeFromVirtualPovCode(POV_CODE_LEFT); break;
-		case JOY_POVRIGHT:			input_state.pad_buttons |= getPadCodeFromVirtualPovCode(POV_CODE_RIGHT); break;
-		case JOY_POVFORWARD_RIGHT:	input_state.pad_buttons |= getPadCodeFromVirtualPovCode(POV_CODE_UP | POV_CODE_RIGHT); break;
-		case JOY_POVRIGHT_BACKWARD:	input_state.pad_buttons |= getPadCodeFromVirtualPovCode(POV_CODE_RIGHT | POV_CODE_DOWN); break;
-		case JOY_POVBACKWARD_LEFT:	input_state.pad_buttons |= getPadCodeFromVirtualPovCode(POV_CODE_DOWN | POV_CODE_LEFT); break;
-		case JOY_POVLEFT_FORWARD:	input_state.pad_buttons |= getPadCodeFromVirtualPovCode(POV_CODE_LEFT | POV_CODE_UP); break;
-	}
+		return -1;
 
-	if (analog)
-	{
-		input_state.pad_lstick_x += (float)js.lX / 10000.f;
-		input_state.pad_lstick_y += -((float)js.lY / 10000.f);
-	}
+	ApplyButtons(js, input_state);
 
-	for (u8 i = 0; i < sizeof(dinput_ctrl_map)/sizeof(dinput_ctrl_map[0]); i += 2)
-	{
-		// DIJOYSTATE2 supported 128 buttons. for exclude the Virtual POV_CODE bit fields.
-		if (dinput_ctrl_map[i] < DIRECTINPUT_RGBBUTTONS_MAX && js.rgbButtons[dinput_ctrl_map[i]] & 0x80)
-		{
-			input_state.pad_buttons |= dinput_ctrl_map[i+1];
+	if (analog)	{
+		AxisInput axis;
+		axis.deviceId = DEVICE_ID_PAD_0 + pDevNum;
+
+		// Circle to Square mapping, cribbed from XInputDevice
+		float sx = js.lX;
+		float sy = js.lY;
+		float scaleFactor = sqrtf((sx * sx + sy * sy) / std::max(sx * sx, sy * sy));
+		js.lX = (short)(sx * scaleFactor);
+		js.lY = (short)(sy * scaleFactor);
+		
+		// Linear range mapping (used to invert deadzones)
+		float dz = g_Config.fDInputAnalogDeadzone;
+		int idzm = g_Config.iDInputAnalogInverseMode;
+		float idz = g_Config.fDInputAnalogInverseDeadzone;
+		float md = std::max(dz, idz);
+		float st = g_Config.fDInputAnalogSensitivity;
+
+		float magnitude = sqrtf(js.lX * js.lX + js.lY * js.lY);
+		if (magnitude > dz * 10000.0f) {
+			if (idzm == 1)
+			{
+				short xSign = Signs(js.lX);
+				if (xSign != 0.0f) {
+					js.lX = LinearMaps(js.lX, xSign * (short)(dz * 10000), xSign * 10000, xSign * (short)(md * 10000), xSign * 10000 * st);
+				}
+			}
+			else if (idzm == 2)
+			{
+				short ySign = Signs(js.lY);
+				if (ySign != 0.0f) {
+					js.lY = LinearMaps(js.lY, ySign * (short)(dz * 10000.0f), ySign * 10000, ySign * (short)(md * 10000.0f), ySign * 10000 * st);
+				}
+			}
+			else if (idzm == 3)
+			{
+				float xNorm = (float)js.lX / magnitude;
+				float yNorm = (float)js.lY / magnitude;
+				float mapMag = LinearMaps(magnitude, dz * 10000.0f, 10000.0f, md * 10000.0f, 10000.0f * st);
+				js.lX = (short)(xNorm * mapMag);
+				js.lY = (short)(yNorm * mapMag);
+			}
 		}
+		else
+		{
+			js.lX = 0;
+			js.lY = 0;
+		}
+
+		js.lX = (short)std::min(10000.0f, std::max((float)js.lX, -10000.0f));
+		js.lY = (short)std::min(10000.0f, std::max((float)js.lY, -10000.0f));
+
+		SendNativeAxis(DEVICE_ID_PAD_0 + pDevNum, js.lX, last_lX_, JOYSTICK_AXIS_X);
+		SendNativeAxis(DEVICE_ID_PAD_0 + pDevNum, js.lY, last_lY_, JOYSTICK_AXIS_Y);
+		SendNativeAxis(DEVICE_ID_PAD_0 + pDevNum, js.lZ, last_lZ_, JOYSTICK_AXIS_Z);
+		SendNativeAxis(DEVICE_ID_PAD_0 + pDevNum, js.lRx, last_lRx_, JOYSTICK_AXIS_RX);
+		SendNativeAxis(DEVICE_ID_PAD_0 + pDevNum, js.lRy, last_lRy_, JOYSTICK_AXIS_RY);
+		SendNativeAxis(DEVICE_ID_PAD_0 + pDevNum, js.lRz, last_lRz_, JOYSTICK_AXIS_RZ);
 	}
 
-	return UPDATESTATE_SKIP_PAD;
+	//check if the values have changed from last time and skip polling the rest of the dinput devices if they did
+	//this doesn't seem to quite work if only the axis have changed
+	if ((memcmp(js.rgbButtons, pPrevState.rgbButtons, sizeof(BYTE) * 128) != 0)
+		|| (memcmp(js.rgdwPOV, pPrevState.rgdwPOV, sizeof(DWORD) * 4) != 0)
+		|| js.lVX != 0 || js.lVY != 0 || js.lVZ != 0 || js.lVRx != 0 || js.lVRy != 0 || js.lVRz != 0)
+	{
+		pPrevState = js;
+		return UPDATESTATE_SKIP_PAD;
+	}
+	return -1;
 }
 
-int DinputDevice::UpdateRawStateSingle(RawInputState &rawState)
-{
-	if (g_Config.iForceInputDevice == 0) return FALSE;
-	if (!pJoystick) return FALSE;
+void DinputDevice::ApplyButtons(DIJOYSTATE2 &state, InputState &input_state) {
+	BYTE *buttons = state.rgbButtons;
+	u32 downMask = 0x80;
 
-	DIJOYSTATE2 js;
-
-	if (FAILED(pJoystick->Poll()))
-	{
-		if(pJoystick->Acquire() == DIERR_INPUTLOST)
-			return FALSE;
-	}
-
-	if(FAILED(pJoystick->GetDeviceState(sizeof(DIJOYSTATE2), &js)))
-    return -1;
-	switch (js.rgdwPOV[0])
-	{
-		case JOY_POVFORWARD:		rawState.button = POV_CODE_UP; return TRUE;
-		case JOY_POVBACKWARD:		rawState.button = POV_CODE_DOWN; return TRUE;
-		case JOY_POVLEFT:			rawState.button = POV_CODE_LEFT; return TRUE;
-		case JOY_POVRIGHT:			rawState.button = POV_CODE_RIGHT; return TRUE;
-	}
-
-	for (int i = 0; i < DIRECTINPUT_RGBBUTTONS_MAX; i++) {
-		if (js.rgbButtons[i] & 0x80) {
-			rawState.button = i;
-			return TRUE;
+	for (int i = 0; i < ARRAY_SIZE(dinput_buttons); ++i) {
+		if (state.rgbButtons[i] == lastButtons_[i]) {
+			continue;
 		}
+
+		bool down = (state.rgbButtons[i] & downMask) == downMask;
+		KeyInput key;
+		key.deviceId = DEVICE_ID_PAD_0 + pDevNum;
+		key.flags = down ? KEY_DOWN : KEY_UP;
+		key.keyCode = dinput_buttons[i];
+		NativeKey(key);
+
+		lastButtons_[i] = state.rgbButtons[i];
 	}
-	return FALSE;
+
+	// Now the POV hat, which can technically go in any degree but usually does not.
+	if (LOWORD(state.rgdwPOV[0]) != lastPOV_[0]) {
+		KeyInput dpad[4];
+		for (int i = 0; i < 4; ++i) {
+			dpad[i].deviceId = DEVICE_ID_PAD_0 + pDevNum;
+			dpad[i].flags = KEY_UP;
+		}
+		dpad[0].keyCode = NKCODE_DPAD_UP;
+		dpad[1].keyCode = NKCODE_DPAD_LEFT;
+		dpad[2].keyCode = NKCODE_DPAD_DOWN;
+		dpad[3].keyCode = NKCODE_DPAD_RIGHT;
+
+		if (LOWORD(state.rgdwPOV[0]) != JOY_POVCENTERED) {
+			// These are the edges, so we use or.
+			if (state.rgdwPOV[0] >= JOY_POVLEFT_FORWARD || state.rgdwPOV[0] <= JOY_POVFORWARD_RIGHT) {
+				dpad[0].flags = KEY_DOWN;
+			}
+			if (state.rgdwPOV[0] >= JOY_POVBACKWARD_LEFT && state.rgdwPOV[0] <= JOY_POVLEFT_FORWARD) {
+				dpad[1].flags = KEY_DOWN;
+			}
+			if (state.rgdwPOV[0] >= JOY_POVRIGHT_BACKWARD && state.rgdwPOV[0] <= JOY_POVBACKWARD_LEFT) {
+				dpad[2].flags = KEY_DOWN;
+			}
+			if (state.rgdwPOV[0] >= JOY_POVFORWARD_RIGHT && state.rgdwPOV[0] <= JOY_POVRIGHT_BACKWARD) {
+				dpad[3].flags = KEY_DOWN;
+			}
+		}
+
+		NativeKey(dpad[0]);
+		NativeKey(dpad[1]);
+		NativeKey(dpad[2]);
+		NativeKey(dpad[3]);
+
+		lastPOV_[0] = LOWORD(state.rgdwPOV[0]);
+	}
+}
+
+size_t DinputDevice::getNumPads()
+{
+	if (devices.empty())
+	{
+		getDevices();
+	}
+	return devices.size();
 }

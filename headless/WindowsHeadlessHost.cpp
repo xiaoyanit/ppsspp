@@ -15,16 +15,21 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
+#include <stdio.h>
+
 #include "WindowsHeadlessHost.h"
 #include "Compare.h"
 
-#include <stdio.h>
-#include <windows.h>
-#include <io.h>
+#include "Common/CommonWindows.h"
 
-#include "gfx_es2/gl_state.h"
+#include "Core/CoreParameter.h"
+#include "Core/System.h"
+#include "GPU/Common/GPUDebugInterface.h"
+#include "GPU/GPUState.h"
+#include "Windows/OpenGLBase.h"
+
+#include "base/logging.h"
 #include "gfx/gl_common.h"
-#include "gfx/gl_lost_manager.h"
 #include "file/vfs.h"
 #include "file/zip_read.h"
 
@@ -32,11 +37,7 @@ const bool WINDOW_VISIBLE = false;
 const int WINDOW_WIDTH = 480;
 const int WINDOW_HEIGHT = 272;
 
-typedef BOOL (APIENTRY *PFNWGLSWAPINTERVALFARPROC)(int value);
-PFNWGLSWAPINTERVALFARPROC wglSwapIntervalEXT = NULL;
-
-HWND CreateHiddenWindow()
-{
+HWND CreateHiddenWindow() {
 	static WNDCLASSEX wndClass = {
 		sizeof(WNDCLASSEX),
 		CS_HREDRAW | CS_VREDRAW | CS_OWNDC,
@@ -48,70 +49,70 @@ HWND CreateHiddenWindow()
 		LoadCursor(NULL, IDC_ARROW),
 		(HBRUSH) GetStockObject(BLACK_BRUSH),
 		NULL,
-		"PPSSPPHeadless",
+		_T("PPSSPPHeadless"),
 		NULL,
 	};
 	RegisterClassEx(&wndClass);
 
 	DWORD style = WS_CLIPSIBLINGS | WS_CLIPCHILDREN | WS_POPUP;
-	return CreateWindowEx(0, "PPSSPPHeadless", "PPSSPPHeadless", style, CW_USEDEFAULT, CW_USEDEFAULT, WINDOW_WIDTH, WINDOW_HEIGHT, NULL, NULL, NULL, NULL);
-}
-
-void SetVSync(int value)
-{
-	const char *extensions = (const char *) glGetString(GL_EXTENSIONS);
-
-	if (!strstr(extensions, "WGL_EXT_swap_control"))
-		return;
-
-	wglSwapIntervalEXT = (PFNWGLSWAPINTERVALFARPROC) wglGetProcAddress("wglSwapIntervalEXT");
-	if (wglSwapIntervalEXT != NULL)
-		wglSwapIntervalEXT(value);
+	return CreateWindowEx(0, _T("PPSSPPHeadless"), _T("PPSSPPHeadless"), style, CW_USEDEFAULT, CW_USEDEFAULT, WINDOW_WIDTH, WINDOW_HEIGHT, NULL, NULL, NULL, NULL);
 }
 
 void WindowsHeadlessHost::LoadNativeAssets()
 {
-	// Native is kinda talkative, but that's annoying in our case.
-	out = _fdopen(_dup(_fileno(stdout)), "wt");
-	freopen("NUL", "wt", stdout);
-
 	VFSRegister("", new DirectoryAssetReader("assets/"));
 	VFSRegister("", new DirectoryAssetReader(""));
 	VFSRegister("", new DirectoryAssetReader("../"));
 	VFSRegister("", new DirectoryAssetReader("../Windows/assets/"));
 	VFSRegister("", new DirectoryAssetReader("../Windows/"));
-
-	gl_lost_manager_init();
-
-	// See SendDebugOutput() for how things get back on track.
 }
 
 void WindowsHeadlessHost::SendDebugOutput(const std::string &output)
 {
-	fprintf_s(out, "%s", output.c_str());
-	OutputDebugString(output.c_str());
+	fwrite(output.data(), sizeof(char), output.length(), stdout);
+	OutputDebugStringUTF8(output.c_str());
+}
+
+void WindowsHeadlessHost::SendOrCollectDebugOutput(const std::string &data)
+{
+	if (PSP_CoreParameter().printfEmuLog)
+		SendDebugOutput(data);
+	else if (PSP_CoreParameter().collectEmuLog)
+		*PSP_CoreParameter().collectEmuLog += data;
+	else
+		DEBUG_LOG(COMMON, "%s", data.c_str());
 }
 
 void WindowsHeadlessHost::SendDebugScreenshot(const u8 *pixbuf, u32 w, u32 h)
 {
-	// We ignore the current framebuffer parameters and just grab the full screen.
-	const static int FRAME_WIDTH = 512;
-	const static int FRAME_HEIGHT = 272;
-	u8 *pixels = new u8[FRAME_WIDTH * FRAME_HEIGHT * 4];
+	// Only if we're actually comparing.
+	if (comparisonScreenshot.empty()) {
+		return;
+	}
 
-	// TODO: Maybe this code should be moved into GLES_GPU.
-	glReadBuffer(GL_FRONT);
-	glReadPixels(0, 0, FRAME_WIDTH, FRAME_HEIGHT, GL_BGRA, GL_UNSIGNED_BYTE, pixels);
+	// We ignore the current framebuffer parameters and just grab the full screen.
+	const static u32 FRAME_STRIDE = 512;
+	const static u32 FRAME_WIDTH = 480;
+	const static u32 FRAME_HEIGHT = 272;
+
+	GPUDebugBuffer buffer;
+	gpuDebug->GetCurrentFramebuffer(buffer);
+	const std::vector<u32> pixels = TranslateDebugBufferToCompare(&buffer, 512, 272);
 
 	std::string error;
-	double errors = CompareScreenshot(pixels, FRAME_WIDTH, FRAME_HEIGHT, FRAME_WIDTH, comparisonScreenshot, error);
+	double errors = CompareScreenshot(pixels, FRAME_STRIDE, FRAME_WIDTH, FRAME_HEIGHT, comparisonScreenshot, error);
 	if (errors < 0)
-		fprintf_s(out, "%s\n", error.c_str());
+		SendOrCollectDebugOutput(error);
 
 	if (errors > 0)
 	{
-		fprintf_s(out, "Screenshot error: %f%%\n", errors * 100.0f);
+		char temp[256];
+		sprintf_s(temp, "Screenshot error: %f%%\n", errors * 100.0f);
+		SendOrCollectDebugOutput(temp);
+	}
 
+	if (errors > 0 && !teamCityMode)
+	{
 		// Lazy, just read in the original header to output the failed screenshot.
 		u8 header[14 + 40] = {0};
 		FILE *bmp = fopen(comparisonScreenshot.c_str(), "rb");
@@ -125,14 +126,12 @@ void WindowsHeadlessHost::SendDebugScreenshot(const u8 *pixbuf, u32 w, u32 h)
 		if (saved)
 		{
 			fwrite(&header, sizeof(header), 1, saved);
-			fwrite(pixels, sizeof(u32), FRAME_WIDTH * FRAME_HEIGHT, saved);
+			fwrite(pixels.data(), sizeof(u32), FRAME_STRIDE * FRAME_HEIGHT, saved);
 			fclose(saved);
 
-			fprintf_s(out, "Actual output written to: __testfailure.bmp\n");
+			SendOrCollectDebugOutput("Actual output written to: __testfailure.bmp\n");
 		}
 	}
-
-	delete [] pixels;
 }
 
 void WindowsHeadlessHost::SetComparisonScreenshot(const std::string &filename)
@@ -140,7 +139,7 @@ void WindowsHeadlessHost::SetComparisonScreenshot(const std::string &filename)
 	comparisonScreenshot = filename;
 }
 
-bool WindowsHeadlessHost::InitGL(std::string *error_message)
+bool WindowsHeadlessHost::InitGraphics(std::string *error_message)
 {
 	hWnd = CreateHiddenWindow();
 
@@ -169,20 +168,18 @@ bool WindowsHeadlessHost::InitGL(std::string *error_message)
 	ENFORCE(hRC = wglCreateContext(hDC), "Unable to create GL context.");
 	ENFORCE(wglMakeCurrent(hDC, hRC), "Unable to activate GL context.");
 
-	SetVSync(0);
+	GL_SwapInterval(0);
 
 	glewInit();
-	glstate.Initialize();
 
 	LoadNativeAssets();
 
 	return ResizeGL();
 }
 
-void WindowsHeadlessHost::ShutdownGL()
+void WindowsHeadlessHost::ShutdownGraphics()
 {
-	if (hRC)
-	{
+	if (hRC) {
 		wglMakeCurrent(NULL, NULL);
 		wglDeleteContext(hRC);
 		hRC = NULL;
@@ -203,8 +200,7 @@ bool WindowsHeadlessHost::ResizeGL()
 	RECT rc;
 	GetWindowRect(hWnd, &rc);
 
-	glstate.viewport.set(0, 0, WINDOW_WIDTH, WINDOW_HEIGHT);
-	glstate.viewport.restore();
+	glViewport(0, 0, WINDOW_WIDTH, WINDOW_HEIGHT);
 	glMatrixMode(GL_PROJECTION);
 	glLoadIdentity();
 	glOrtho(0.0f, WINDOW_WIDTH, WINDOW_HEIGHT, 0.0f, -1.0f, 1.0f);

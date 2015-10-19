@@ -17,31 +17,33 @@
 
 #pragma once
 
-#include "../../Globals.h"
-#include "Common.h"
 #include <map>
+
+#include "Common/Common.h"
+#include "Common/CommonTypes.h"
 
 class PointerWrap;
 
 enum
 {
-	SCE_KERNEL_ERROR_OK                     = 0,
-	SCE_KERNEL_ERROR_ALREADY                = 0x80000020,
-	SCE_KERNEL_ERROR_BUSY                   = 0x80000021,
-	SCE_KERNEL_ERROR_OUT_OF_MEMORY          = 0x80000022,
-	SCE_KERNEL_ERROR_INVALID_ID             = 0x80000100,
-	SCE_KERNEL_ERROR_INVALID_NAME           = 0x80000101,
-	SCE_KERNEL_ERROR_INVALID_INDEX          = 0x80000102,
-	SCE_KERNEL_ERROR_INVALID_POINTER        = 0x80000103,
-	SCE_KERNEL_ERROR_INVALID_SIZE           = 0x80000104,
-	SCE_KERNEL_ERROR_INVALID_FLAG           = 0x80000105,
-	SCE_KERNEL_ERROR_INVALID_COMMAND        = 0x80000106,
-	SCE_KERNEL_ERROR_INVALID_MODE           = 0x80000107,
-	SCE_KERNEL_ERROR_INVALID_FORMAT         = 0x80000108,
-	SCE_KERNEL_ERROR_INVALID_VALUE          = 0x800001FE,
-	SCE_KERNEL_ERROR_INVALID_ARGUMENT       = 0x800001FF,
-	SCE_KERNEL_ERROR_BAD_FILE               = 0x80000209,
-	SCE_KERNEL_ERROR_ACCESS_ERROR           = 0x8000020D,
+	SCE_KERNEL_ERROR_OK                               = 0,
+	SCE_KERNEL_ERROR_ALREADY                          = 0x80000020,
+	SCE_KERNEL_ERROR_BUSY                             = 0x80000021,
+	SCE_KERNEL_ERROR_OUT_OF_MEMORY                    = 0x80000022,
+	SCE_KERNEL_ERROR_PRIV_REQUIRED                    = 0x80000023,
+	SCE_KERNEL_ERROR_INVALID_ID                       = 0x80000100,
+	SCE_KERNEL_ERROR_INVALID_NAME                     = 0x80000101,
+	SCE_KERNEL_ERROR_INVALID_INDEX                    = 0x80000102,
+	SCE_KERNEL_ERROR_INVALID_POINTER                  = 0x80000103,
+	SCE_KERNEL_ERROR_INVALID_SIZE                     = 0x80000104,
+	SCE_KERNEL_ERROR_INVALID_FLAG                     = 0x80000105,
+	SCE_KERNEL_ERROR_INVALID_COMMAND                  = 0x80000106,
+	SCE_KERNEL_ERROR_INVALID_MODE                     = 0x80000107,
+	SCE_KERNEL_ERROR_INVALID_FORMAT                   = 0x80000108,
+	SCE_KERNEL_ERROR_INVALID_VALUE                    = 0x800001FE,
+	SCE_KERNEL_ERROR_INVALID_ARGUMENT                 = 0x800001FF,
+	SCE_KERNEL_ERROR_BAD_FILE                         = 0x80000209,
+	SCE_KERNEL_ERROR_ACCESS_ERROR                     = 0x8000020D,
 
 	SCE_KERNEL_ERROR_ERRNO_ARG_LIST_TOO_LONG          = 0x80010007,
 	SCE_KERNEL_ERROR_ERRNO_INVALID_FILE_DESCRIPTOR    = 0x80010009,
@@ -305,36 +307,39 @@ enum
 
 	SCE_KERNEL_ERROR_CACHE_ALIGNMENT                  = 0x8002044c,
 	SCE_KERNEL_ERROR_ERRORMAX                         = 0x8002044d,
+
+	SCE_KERNEL_ERROR_POWER_VMEM_IN_USE                = 0x802b0200,
 };
 
 // If you add to this, make sure to check KernelObjectPool::CreateByIDType().
 enum TMIDPurpose
 {
-	SCE_KERNEL_TMID_Thread = 1,
-	SCE_KERNEL_TMID_Semaphore = 2,
-	SCE_KERNEL_TMID_EventFlag = 3,
-	SCE_KERNEL_TMID_Mbox = 4,
-	SCE_KERNEL_TMID_Vpl = 5,
-	SCE_KERNEL_TMID_Fpl = 6,
-	SCE_KERNEL_TMID_Mpipe = 7,
-	SCE_KERNEL_TMID_Callback = 8,
+	SCE_KERNEL_TMID_Thread             = 1,
+	SCE_KERNEL_TMID_Semaphore          = 2,
+	SCE_KERNEL_TMID_EventFlag          = 3,
+	SCE_KERNEL_TMID_Mbox               = 4,
+	SCE_KERNEL_TMID_Vpl                = 5,
+	SCE_KERNEL_TMID_Fpl                = 6,
+	SCE_KERNEL_TMID_Mpipe              = 7,
+	SCE_KERNEL_TMID_Callback           = 8,
 	SCE_KERNEL_TMID_ThreadEventHandler = 9,
-	SCE_KERNEL_TMID_Alarm = 10,
-	SCE_KERNEL_TMID_VTimer = 11,
-	SCE_KERNEL_TMID_Mutex = 12,
-	SCE_KERNEL_TMID_LwMutex = 13,
-	SCE_KERNEL_TMID_SleepThread = 64,
-	SCE_KERNEL_TMID_DelayThread = 65,
-	SCE_KERNEL_TMID_SuspendThread = 66,
-	SCE_KERNEL_TMID_DormantThread = 67,
-	// No idea what the correct value is here or how to find out.
-	SCE_KERNEL_TMID_Tls = 0x1001,
+	SCE_KERNEL_TMID_Alarm              = 10,
+	SCE_KERNEL_TMID_VTimer             = 11,
+	SCE_KERNEL_TMID_Mutex              = 12,
+	SCE_KERNEL_TMID_LwMutex            = 13,
+	SCE_KERNEL_TMID_Tlspl              = 14,
+	SCE_KERNEL_TMID_SleepThread        = 64,
+	SCE_KERNEL_TMID_DelayThread        = 65,
+	SCE_KERNEL_TMID_SuspendThread      = 66,
+	SCE_KERNEL_TMID_DormantThread      = 67,
+	// This is kept for old savestates.  Not the real value.
+	SCE_KERNEL_TMID_Tlspl_v0           = 0x1001,
 
 	// Not official, but need ids for save states.
-	PPSSPP_KERNEL_TMID_Module =  0x100001,
-	PPSSPP_KERNEL_TMID_PMB =     0x100002,
-	PPSSPP_KERNEL_TMID_File =    0x100003,
-	PPSSPP_KERNEL_TMID_DirList = 0x100004,
+	PPSSPP_KERNEL_TMID_Module          = 0x100001,
+	PPSSPP_KERNEL_TMID_PMB             = 0x100002,
+	PPSSPP_KERNEL_TMID_File            = 0x100003,
+	PPSSPP_KERNEL_TMID_DirList         = 0x100004,
 };
 
 typedef int SceUID;
@@ -346,12 +351,20 @@ typedef int SceMode;
 typedef s64 SceOff;
 typedef u64 SceIores;
 
+typedef s32_le SceUID_le;
+typedef u32_le SceSize_le;
+typedef s32_le SceSSize_le;
+typedef u32_le SceUInt_le;
+typedef s32_le SceMode_le;
+typedef s64_le SceOff_le;
+typedef s64_le SceIores_le;
+
 struct SceKernelLoadExecParam
 {
-	SceSize size;  // Size of the structure
-	SceSize args;  // Size of the arg string
-	void *argp;        // Pointer to the arg string
-	const char *key; // Encryption key? Not yet used
+	SceSize_le size;    // Size of the structure
+	SceSize_le args;    // Size of the arg string
+	u32_le argp;      // Pointer to the arg string
+	u32_le keyp; // Encryption key? Not yet used
 };
 
 void __KernelInit();
@@ -364,13 +377,11 @@ int sceKernelLoadExec(const char *filename, u32 paramPtr);
 
 void sceKernelExitGame();
 void sceKernelExitGameWithStatus();
-int LoadExecForUser_362A956B();
-void sceKernelRegisterExitCallback();
 
 u32 sceKernelDevkitVersion();
 
 u32 sceKernelRegisterKprintfHandler();
-void sceKernelRegisterDefaultExceptionHandler();
+int sceKernelRegisterDefaultExceptionHandler();
 
 u32 sceKernelFindModuleByName(const char *name);
 
@@ -381,7 +392,7 @@ int sceKernelDcacheWritebackAll();
 int sceKernelDcacheWritebackRange(u32 addr, int size);
 int sceKernelDcacheWritebackInvalidateRange(u32 addr, int size);
 int sceKernelDcacheWritebackInvalidateAll();
-void sceKernelGetThreadStackFreeSize();
+int sceKernelGetThreadStackFreeSize(SceUID threadID);
 u32 sceKernelIcacheInvalidateAll();
 u32 sceKernelIcacheClearAll();
 int sceKernelIcacheInvalidateRange(u32 addr, int size);
@@ -400,14 +411,15 @@ public:
 	virtual const char *GetTypeName() {return "[BAD KERNEL OBJECT TYPE]";}
 	virtual const char *GetName() {return "[UNKNOWN KERNEL OBJECT]";}
 	virtual int GetIDType() const = 0;
-	virtual void GetQuickInfo(char *ptr, int size) {strcpy(ptr,"-");}
+	virtual void GetQuickInfo(char *ptr, int size);
 
 	// Implement this in all subclasses:
 	// static u32 GetMissingErrorCode()
+	// static int GetStaticIDType()
 
 	virtual void DoState(PointerWrap &p)
 	{
-		_dbg_assert_msg_(HLE, false, "Unable to save state: bad kernel object.");
+		_dbg_assert_msg_(SCEKERNEL, false, "Unable to save state: bad kernel object.");
 	}
 };
 
@@ -418,7 +430,7 @@ public:
 	~KernelObjectPool() {}
 
 	// Allocates a UID within the range and inserts the object into the map.
-	SceUID Create(KernelObject *obj, int rangeBottom = 16, int rangeTop = 0x7fffffff);
+	SceUID Create(KernelObject *obj, int rangeBottom = initialNextID, int rangeTop = 0x7fffffff);
 
 	void DoState(PointerWrap &p);
 	static KernelObject *CreateByIDType(int type);
@@ -435,24 +447,31 @@ public:
 		return error;
 	};
 
-	bool IsValid(SceUID handle);
+	bool IsValid(SceUID handle) const;
 
 	template <class T>
 	T* Get(SceUID handle, u32 &outError)
 	{
 		if (handle < handleOffset || handle >= handleOffset+maxCount || !occupied[handle-handleOffset])
 		{
-			ERROR_LOG(HLE, "Kernel: Bad object handle %i (%08x)", handle, handle);
-			outError = T::GetMissingErrorCode(); // ?
+			// Tekken 6 spams 0x80020001 gets wrong with no ill effects, also on the real PSP
+			if (handle != 0 && (u32)handle != 0x80020001)
+			{
+				WARN_LOG(SCEKERNEL, "Kernel: Bad object handle %i (%08x)", handle, handle);
+			}
+			outError = T::GetMissingErrorCode();
 			return 0;
 		}
 		else
 		{
-			T* t = dynamic_cast<T*>(pool[handle - handleOffset]);
-			if (t == 0)
+			// Previously we had a dynamic_cast here, but since RTTI was disabled traditionally,
+			// it just acted as a static case and everything worked. This means that we will never
+			// see the Wrong type object error below, but we'll just have to live with that danger.
+			T* t = static_cast<T*>(pool[handle - handleOffset]);
+			if (t == 0 || t->GetIDType() != T::GetStaticIDType())
 			{
-				ERROR_LOG(HLE, "Kernel: Wrong type object %i (%08x)", handle, handle);
-				outError = T::GetMissingErrorCode(); //FIX
+				WARN_LOG(SCEKERNEL, "Kernel: Wrong object type for %i (%08x)", handle, handle);
+				outError = T::GetMissingErrorCode();
 				return 0;
 			}
 			outError = SCE_KERNEL_ERROR_OK;
@@ -465,34 +484,47 @@ public:
 	T *GetFast(SceUID handle)
 	{
 		const SceUID realHandle = handle - handleOffset;
-		if (realHandle < 0 || realHandle >= maxCount || !occupied[realHandle])
-		{
-			ERROR_LOG(HLE, "Kernel: Bad fast object handle %i (%08x)", handle, handle);
-			return 0;
-		}
+		_dbg_assert_(SCEKERNEL, realHandle >= 0 && realHandle < maxCount && occupied[realHandle]);
 		return static_cast<T *>(pool[realHandle]);
 	}
 
 	template <class T, typename ArgT>
-	void Iterate(bool func(T *, ArgT), ArgT arg)
-	{
-		for (int i = 0; i < maxCount; i++)
-		{
+	void Iterate(bool func(T *, ArgT), ArgT arg) {
+		int type = T::GetStaticIDType();
+		for (int i = 0; i < maxCount; i++) {
 			if (!occupied[i])
 				continue;
-			T *t = dynamic_cast<T *>(pool[i]);
-			if (t)
-			{
+			T *t = static_cast<T *>(pool[i]);
+			if (t->GetIDType() == type) {
 				if (!func(t, arg))
 					break;
 			}
 		}
 	}
 
-	static u32 GetMissingErrorCode() { return -1; }	// TODO
+	int ListIDType(int type, SceUID *uids, int count) const {
+		int total = 0;
+		for (int i = 0; i < maxCount; i++) {
+			if (!occupied[i]) {
+				continue;
+			}
+			if (pool[i]->GetIDType() == type) {
+				if (total < count) {
+					*uids++ = pool[i]->GetUID();
+				}
+				++total;
+			}
+		}
+		return total;
+	}
 
 	bool GetIDType(SceUID handle, int *type) const
 	{
+		if (handle < handleOffset || handle >= handleOffset+maxCount || !occupied[handle-handleOffset])
+		{
+			ERROR_LOG(SCEKERNEL, "Kernel: Bad object handle %i (%08x)", handle, handle);
+			return false;
+		}
 		KernelObject *t = pool[handle - handleOffset];
 		*type = t->GetIDType();
 		return true;
@@ -501,12 +533,13 @@ public:
 	KernelObject *&operator [](SceUID handle);
 	void List();
 	void Clear();
-	int GetCount();
+	int GetCount() const;
 
 private:
 	enum {
-		maxCount=4096,
-		handleOffset=0x100
+		maxCount = 4096,
+		handleOffset = 0x100,
+		initialNextID = 0x10
 	};
 	KernelObject *pool[maxCount];
 	bool occupied[maxCount];
@@ -542,4 +575,8 @@ extern KernelStats kernelStats;
 extern u32 registeredExitCbId;
 
 void Register_ThreadManForUser();
+void Register_ThreadManForKernel();
 void Register_LoadExecForUser();
+void Register_LoadExecForKernel();
+void Register_SysMemForKernel();
+void Register_UtilsForKernel();

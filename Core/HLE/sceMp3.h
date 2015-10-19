@@ -17,6 +17,9 @@
 
 #pragma once
 
-#include "HLE.h"
+class PointerWrap;
 
 void Register_sceMp3();
+
+void __Mp3Shutdown();
+void __Mp3DoState(PointerWrap &p);

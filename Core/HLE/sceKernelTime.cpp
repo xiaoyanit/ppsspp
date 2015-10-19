@@ -16,8 +16,7 @@
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
 #ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+#include "Common/CommonWindows.h"
 #else
 #include <sys/time.h>
 #endif
@@ -29,18 +28,12 @@
 #include "Core/HLE/HLE.h"
 #include "Core/HLE/sceKernel.h"
 #include "Core/HLE/sceKernelTime.h"
+#include "Core/HLE/sceKernelThread.h"
 #include "Core/HLE/sceRtc.h"
-
-//////////////////////////////////////////////////////////////////////////
-// State
-//////////////////////////////////////////////////////////////////////////
+#include "Core/MemMap.h"
 
 // The time when the game started.
-time_t start_time;
-
-//////////////////////////////////////////////////////////////////////////
-// Other clock stuff
-//////////////////////////////////////////////////////////////////////////
+static time_t start_time;
 
 void __KernelTimeInit()
 {
@@ -49,62 +42,68 @@ void __KernelTimeInit()
 
 void __KernelTimeDoState(PointerWrap &p)
 {
-	p.Do(start_time);
-	p.DoMarker("sceKernelTime");
-}
+	auto s = p.Section("sceKernelTime", 1, 2);
+	if (!s)
+		return;
 
-struct SceKernelSysClock
-{
-	u32 lo;
-	u32 hi;
-};
+	if (s < 2) {
+		p.Do(start_time);
+	} else {
+		u64 t = start_time;
+		p.Do(t);
+		start_time = (time_t)t;
+	}
+}
 
 int sceKernelGetSystemTime(u32 sysclockPtr)
 {
-	u64 t = CoreTiming::GetTicks() / CoreTiming::GetClockFrequencyMHz();
+	u64 t = CoreTiming::GetGlobalTimeUs();
 	if (Memory::IsValidAddress(sysclockPtr)) 
 		Memory::Write_U64(t, sysclockPtr);
-	DEBUG_LOG(HLE, "sceKernelGetSystemTime(out:%16llx)", t);
+	VERBOSE_LOG(SCEKERNEL, "sceKernelGetSystemTime(out:%16llx)", t);
 	hleEatCycles(265);
+	hleReSchedule("system time");
 	return 0;
 }
 
 u32 sceKernelGetSystemTimeLow()
 {
 	// This clock should tick at 1 Mhz.
-	u64 t = CoreTiming::GetTicks() / CoreTiming::GetClockFrequencyMHz();
-	VERBOSE_LOG(HLE,"%08x=sceKernelGetSystemTimeLow()",(u32)t);
+	u64 t = CoreTiming::GetGlobalTimeUs();
+	VERBOSE_LOG(SCEKERNEL,"%08x=sceKernelGetSystemTimeLow()",(u32)t);
 	hleEatCycles(165);
+	hleReSchedule("system time");
 	return (u32)t;
 }
 
 u64 sceKernelGetSystemTimeWide()
 {
-	u64 t = CoreTiming::GetTicks() / CoreTiming::GetClockFrequencyMHz();
-	DEBUG_LOG(HLE,"%i=sceKernelGetSystemTimeWide()",(u32)t);
+	u64 t = CoreTiming::GetGlobalTimeUsScaled();
+	VERBOSE_LOG(SCEKERNEL,"%i=sceKernelGetSystemTimeWide()",(u32)t);
 	hleEatCycles(250);
+	hleReSchedule("system time");
 	return t;
 }
 
 int sceKernelUSec2SysClock(u32 usec, u32 clockPtr)
 {
-	DEBUG_LOG(HLE,"sceKernelUSec2SysClock(%i, %08x )", usec, clockPtr);
+	VERBOSE_LOG(SCEKERNEL, "sceKernelUSec2SysClock(%i, %08x)", usec, clockPtr);
 	if (Memory::IsValidAddress(clockPtr))
-		Memory::Write_U32((usec & 0xFFFFFFFFL), clockPtr);
+		Memory::Write_U64((usec & 0xFFFFFFFFL), clockPtr);
 	hleEatCycles(165);
 	return 0;
 }
 
 u64 sceKernelUSec2SysClockWide(u32 usec)
 {
-	DEBUG_LOG(HLE, "sceKernelUSec2SysClockWide(%i)", usec);
+	VERBOSE_LOG(SCEKERNEL, "sceKernelUSec2SysClockWide(%i)", usec);
 	hleEatCycles(150);
 	return usec; 
 }
 
 int sceKernelSysClock2USec(u32 sysclockPtr, u32 highPtr, u32 lowPtr)
 {
-	DEBUG_LOG(HLE, "sceKernelSysClock2USec(clock = %08x, lo = %08x, hi = %08x)", sysclockPtr, highPtr, lowPtr);
+	DEBUG_LOG(SCEKERNEL, "sceKernelSysClock2USec(clock = %08x, lo = %08x, hi = %08x)", sysclockPtr, highPtr, lowPtr);
 	u64 time = Memory::Read_U64(sysclockPtr);
 	u32 highResult = (u32)(time / 1000000);
 	u32 lowResult = (u32)(time % 1000000);
@@ -119,7 +118,7 @@ int sceKernelSysClock2USec(u32 sysclockPtr, u32 highPtr, u32 lowPtr)
 int sceKernelSysClock2USecWide(u32 lowClock, u32 highClock, u32 lowPtr, u32 highPtr)
 {
 	u64 sysClock = lowClock | ((u64)highClock << 32);
-	DEBUG_LOG(HLE, "sceKernelSysClock2USecWide(clock = %llu, lo = %08x, hi = %08x)", sysClock, lowPtr, highPtr);
+	DEBUG_LOG(SCEKERNEL, "sceKernelSysClock2USecWide(clock = %llu, lo = %08x, hi = %08x)", sysClock, lowPtr, highPtr);
 	if (Memory::IsValidAddress(lowPtr)) {
 		Memory::Write_U32((u32)(sysClock / 1000000), lowPtr);
 		if (Memory::IsValidAddress(highPtr)) 
@@ -133,17 +132,18 @@ int sceKernelSysClock2USecWide(u32 lowClock, u32 highClock, u32 lowPtr, u32 high
 
 u32 sceKernelLibcClock()
 {
-	u32 retVal = (u32) (CoreTiming::GetTicks() / CoreTiming::GetClockFrequencyMHz());
-	DEBUG_LOG(HLE, "%i = sceKernelLibcClock", retVal);
+	u32 retVal = (u32) CoreTiming::GetGlobalTimeUs();
+	DEBUG_LOG(SCEKERNEL, "%i = sceKernelLibcClock", retVal);
 	hleEatCycles(330);
+	hleReSchedule("libc clock");
 	return retVal;
 }
 
 u32 sceKernelLibcTime(u32 outPtr)
 {
-	u32 t = (u32) start_time + (u32) (CoreTiming::GetTicks() / CPU_HZ);
+	u32 t = (u32) start_time + (u32) (CoreTiming::GetGlobalTimeUs() / 1000000ULL);
 
-	DEBUG_LOG(HLE, "%i = sceKernelLibcTime(%08X)", t, outPtr);
+	DEBUG_LOG(SCEKERNEL, "%i = sceKernelLibcTime(%08X)", t, outPtr);
 	// The PSP sure takes its sweet time on this function.
 	hleEatCycles(3385);
 
@@ -152,6 +152,7 @@ u32 sceKernelLibcTime(u32 outPtr)
 	else if (outPtr != 0)
 		return 0;
 
+	hleReSchedule("libc time");
 	return t;
 }
 
@@ -160,11 +161,13 @@ u32 sceKernelLibcGettimeofday(u32 timeAddr, u32 tzAddr)
 	// TODO: tzAddr?
 	if (Memory::IsValidAddress(timeAddr))
 	{
-		timeval *tv = (timeval *)Memory::GetPointer(timeAddr);
+		PSPTimeval *tv = (PSPTimeval *)Memory::GetPointer(timeAddr);
 		__RtcTimeOfDay(tv);
 	}
 
-	DEBUG_LOG(HLE,"sceKernelLibcGettimeofday(%08x, %08x)", timeAddr, tzAddr);
+	DEBUG_LOG(SCEKERNEL,"sceKernelLibcGettimeofday(%08x, %08x)", timeAddr, tzAddr);
 	hleEatCycles(1885);
-    return 0;
+
+	hleReSchedule("libc timeofday");
+	return 0;
 }
